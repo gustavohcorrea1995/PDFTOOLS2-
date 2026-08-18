@@ -1,0 +1,23 @@
+PDFTOOLS - REFAZER DO ZERO
+
+Este pacote foi montado para substituir a versão atual do projeto.
+
+1. Substitua o conteúdo do repositório pelos arquivos desta pasta.
+2. Mantenha exatamente esta estrutura:
+   - server.js
+   - package.json
+   - Dockerfile
+   - render.yaml
+   - public/index.html
+   - public/app.js
+   - public/styles.css
+3. APAGUE o package-lock.json antigo antes do deploy.
+4. Faça um novo deploy no Render usando Docker.
+5. Abra a ferramenta "Adicionar texto/imagem".
+6. Envie um PDF e aguarde a prévia.
+
+IMPORTANTE:
+- A prévia não depende mais de /api/preview.
+- As páginas são enviadas como imagens diretamente no /api/inspect.
+- A exclusão usa redação permanente do MuPDF.
+- O texto original é removido antes de qualquer texto de substituição ser desenhado.
