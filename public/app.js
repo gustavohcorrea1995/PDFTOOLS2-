@@ -525,8 +525,30 @@ RENDERERS['annotate'] = (root)=>{
       .forEach(t => {
         const changed = edits.find(e => e.id === t.id);
 
-        if(changed && changed.deleted){
-          return;
+        // A imagem do PDF continua sendo a página original. Então, quando
+        // algo é excluído/alterado, precisamos cobrir visualmente a área
+        // original na prévia. A remoção definitiva continua sendo feita
+        // pelo servidor quando o PDF é salvo.
+        if(changed){
+          const cover = document.createElement('div');
+
+          cover.style.cssText = `
+            position:absolute;
+            left:${t.x * scale}px;
+            top:${t.y * scale}px;
+            width:${Math.max(t.width * scale, 3)}px;
+            height:${Math.max(t.height * scale, 6)}px;
+            background:#fff;
+            pointer-events:none;
+            box-sizing:border-box;
+            z-index:1;
+          `;
+
+          textLayer.appendChild(cover);
+
+          if(changed.deleted){
+            return;
+          }
         }
 
         const value = changed ? changed.text : t.text;
