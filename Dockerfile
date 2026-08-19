@@ -6,6 +6,9 @@ RUN apt-get update \
      ghostscript \
      libreoffice \
      fonts-liberation \
+     tesseract-ocr \
+     tesseract-ocr-por \
+     tesseract-ocr-eng \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
