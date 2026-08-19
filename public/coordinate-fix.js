@@ -1,7 +1,8 @@
-// Corrige a camada visual do editor para usar exatamente a mesma escala
-// utilizada pelo pdftocairo no /api/inspect.
+// Mantém as coordenadas da camada de texto alinhadas com as prévias
+// de alta resolução usadas pelo editor (/api/preview com -scale-to 1600).
 (() => {
   const originalFetch = window.fetch.bind(window);
+  const maxPreviewDimension = 1600;
 
   window.fetch = async (...args) => {
     const response = await originalFetch(...args);
@@ -13,17 +14,13 @@
       const data = await response.clone().json();
       if (!Array.isArray(data.textBoxes) || !Array.isArray(data.pageSizes)) return response;
 
-      // O servidor usa pdftocairo com -scale-to 1100.
-      // IMPORTANTE: -scale-to limita a MAIOR dimensão da página a 1100px.
-      // Portanto, em A4 retrato, por exemplo, a altura fica em 1100px e a
-      // largura fica proporcionalmente menor (~778px). Usar 1100/page.width
-      // deslocava todas as caixas horizontalmente.
-      const maxPreviewDimension = 1100;
-
       data.textBoxes = data.textBoxes.map(box => {
         const page = data.pageSizes[Number(box.page) - 1];
         if (!page || !Number.isFinite(page.width) || !Number.isFinite(page.height)) return box;
 
+        // O mesmo critério do pdftocairo -scale-to: a maior dimensão da
+        // página é limitada a 1600px. Isso funciona para retrato, paisagem
+        // e páginas com dimensões personalizadas.
         const scale = maxPreviewDimension / Math.max(page.width, page.height);
 
         return {
@@ -38,7 +35,6 @@
 
       const headers = new Headers(response.headers);
       headers.set('content-type', 'application/json');
-
       return new Response(JSON.stringify(data), {
         status: response.status,
         statusText: response.statusText,
