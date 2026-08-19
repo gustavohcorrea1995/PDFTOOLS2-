@@ -4,7 +4,7 @@
   let fileId = null;
   let requestVersion = 0;
 
-  const originalFetch = window.fetch.bind(window.fetch);
+  const originalFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
     const response = await originalFetch(...args);
     try {
@@ -28,9 +28,6 @@
   }
 
   function requestRender() {
-    // app.js mantém renderTextLayer dentro de um closure. O listener de
-    // resize já existente é a forma segura de pedir uma nova camada sem
-    // expor nem alterar a implementação do editor.
     window.dispatchEvent(new Event('resize'));
   }
 
@@ -46,9 +43,6 @@
     if (img.dataset.hqPage === targetPage && img.src.includes(expectedUrl)) return;
 
     const version = ++requestVersion;
-
-    // Quando app.js acabou de trocar de página, o src atual é a data URL
-    // daquela página. Atualizamos o fallback para NÃO guardar a página 1.
     const currentSrc = img.getAttribute('src') || '';
     if (currentSrc.startsWith('data:image/')) {
       img.dataset.originalSrc = currentSrc;
@@ -70,8 +64,6 @@
 
     img.onload = () => {
       if (version !== requestVersion) return;
-      // Ignora respostas antigas: só a solicitação da página atualmente
-      // selecionada pode atualizar a camada visual.
       if (currentPage() !== page) return;
       img.dataset.hqLoading = '0';
       requestAnimationFrame(requestRender);
