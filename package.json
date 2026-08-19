@@ -2,9 +2,9 @@
   "name": "pdftools",
   "version": "1.0.0",
   "description": "Ferramenta web para juntar, dividir, converter, comprimir e editar PDFs",
-  "main": "server.js",
+  "main": "start.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node start.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",
