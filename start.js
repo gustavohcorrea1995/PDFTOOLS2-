@@ -124,7 +124,28 @@ if (pattern.test(source)) {
   console.warn('PDFTools startup patch: inspect block not found; starting original server.');
 }
 
+// OCR is isolated from the existing editor. It is registered at startup
+// without changing any editor renderer, coordinate logic, or preview code.
+const ocrRegister = require(path.join(__dirname, 'ocr-route.js'));
+const ocrRegisterMarker = "ocrRegister(serverModule)";
+const ocrInjection = `\n// OCR route registration is injected after server compilation below.\n`;
+
+const originalCompile = serverModule => {
+  serverModule._compile(source, serverPath);
+};
+
 const serverModule = new Module(serverPath, module);
 serverModule.filename = serverPath;
 serverModule.paths = Module._nodeModulePaths(__dirname);
+
+// Register OCR in the Express app by injecting a tiny registration call before listen.
+const ocrCall = `\nrequire(${JSON.stringify(path.join(__dirname, 'ocr-route.js'))})(app, { upload, UP, TMP, run, cleanup });\n`;
+const listenMarker = '\napp.listen(PORT, () => console.log(`PDFTools rodando na porta ${PORT}`));';
+if (source.includes(listenMarker)) {
+  source = source.replace(listenMarker, `${ocrCall}${listenMarker}`);
+  console.log('PDFTools startup patch: isolated OCR route enabled.');
+} else {
+  console.warn('PDFTools startup patch: listen marker not found; OCR route disabled.');
+}
+
 serverModule._compile(source, serverPath);
