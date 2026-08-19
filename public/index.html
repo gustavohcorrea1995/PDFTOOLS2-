@@ -26,5 +26,26 @@
   <script src="/progress-ui.js" defer></script>
   <script src="/editor-preview.js" defer></script>
   <script src="/app.js" defer></script>
+  <script defer>
+    document.addEventListener('DOMContentLoaded', () => {
+      const applyEditorLabel = () => {
+        const cards = document.querySelectorAll('.tool-card');
+        cards.forEach(card => {
+          const title = card.querySelector('h3');
+          if (title && title.textContent.trim() === 'Adicionar texto/imagem') {
+            title.textContent = 'Editar PDF';
+            const desc = card.querySelector('p');
+            if (desc) desc.textContent = 'Edite textos, imagens e elementos do seu PDF.';
+          }
+        });
+        const workspaceTitle = document.getElementById('toolTitle');
+        if (workspaceTitle && workspaceTitle.textContent.trim() === 'Adicionar texto/imagem') {
+          workspaceTitle.textContent = 'Editar PDF';
+        }
+      };
+      applyEditorLabel();
+      new MutationObserver(applyEditorLabel).observe(document.body, { childList: true, subtree: true });
+    });
+  </script>
 </body>
 </html>
