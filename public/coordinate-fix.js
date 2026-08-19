@@ -1,7 +1,5 @@
-// Corrige a camada visual do editor para usar as dimensões reais de cada página.
-// O Poppler fornece as coordenadas do texto em pontos PDF; a prévia é rasterizada
-// mantendo a proporção da página. A escala precisa, portanto, ser calculada por
-// página, e não assumida como 1100/612 para todos os documentos.
+// Corrige a camada visual do editor para usar exatamente a mesma escala
+// utilizada pelo pdftocairo no /api/inspect.
 (() => {
   const originalFetch = window.fetch.bind(window);
 
@@ -15,16 +13,19 @@
       const data = await response.clone().json();
       if (!Array.isArray(data.textBoxes) || !Array.isArray(data.pageSizes)) return response;
 
-      // O /api/inspect mantém pdfX/pdfY em pontos PDF. Recalculamos apenas
-      // as coordenadas usadas pela camada visual para a largura de 1100px
-      // usada nas miniaturas/prévias atuais.
-      const previewWidth = 1100;
+      // O servidor usa pdftocairo com -scale-to 1100.
+      // IMPORTANTE: -scale-to limita a MAIOR dimensão da página a 1100px.
+      // Portanto, em A4 retrato, por exemplo, a altura fica em 1100px e a
+      // largura fica proporcionalmente menor (~778px). Usar 1100/page.width
+      // deslocava todas as caixas horizontalmente.
+      const maxPreviewDimension = 1100;
 
       data.textBoxes = data.textBoxes.map(box => {
         const page = data.pageSizes[Number(box.page) - 1];
         if (!page || !Number.isFinite(page.width) || !Number.isFinite(page.height)) return box;
 
-        const scale = previewWidth / page.width;
+        const scale = maxPreviewDimension / Math.max(page.width, page.height);
+
         return {
           ...box,
           x: Number(box.pdfX) * scale,
@@ -37,6 +38,7 @@
 
       const headers = new Headers(response.headers);
       headers.set('content-type', 'application/json');
+
       return new Response(JSON.stringify(data), {
         status: response.status,
         statusText: response.statusText,
