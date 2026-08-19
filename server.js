@@ -9,519 +9,417 @@ const { execFile } = require('child_process');
 const { PDFDocument, degrees, rgb, StandardFonts } = require('pdf-lib');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
-
+const PORT = process.env.PORT || 10000;
 const UP = path.join(__dirname, 'uploads');
 const TMP = path.join(__dirname, 'tmp');
 [UP, TMP].forEach(d => fs.mkdirSync(d, { recursive: true }));
 
+app.disable('x-powered-by');
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
+
+const ALLOWED_EXT = new Set([
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt',
+  '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff'
+]);
+const MAX_FILE_SIZE = 200 * 1024 * 1024;
 
 const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, UP),
-    filename: (req, file, cb) => cb(null, uuid() + path.extname(file.originalname))
+    filename: (req, file, cb) => cb(null, uuid() + path.extname(file.originalname || '').toLowerCase())
   }),
-  limits: { fileSize: 200 * 1024 * 1024 } // 200MB
+  limits: { fileSize: MAX_FILE_SIZE, files: 50, fields: 20, parts: 70 },
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (!ALLOWED_EXT.has(ext)) return cb(new Error(`Tipo de arquivo não permitido: ${ext || 'sem extensão'}.`));
+    cb(null, true);
+  }
 });
 
-// ---------- helpers ----------
-
-function run(cmd, args) {
+function run(cmd, args, options = {}) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { maxBuffer: 1024 * 1024 * 200 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(stderr || err.message));
-      resolve(stdout);
+    execFile(cmd, args, {
+      maxBuffer: 20 * 1024 * 1024,
+      timeout: options.timeout || 180000,
+      windowsHide: true
+    }, (err, stdout, stderr) => {
+      if (err) {
+        const detail = String(stderr || '').trim();
+        reject(new Error(detail ? `${err.message}: ${detail.slice(0, 2500)}` : err.message));
+      } else resolve(stdout);
     });
   });
 }
 
 function cleanup(...files) {
-  files.forEach(f => {
-    if (!f) return;
-    fs.rm(f, { recursive: true, force: true }, () => {});
-  });
+  files.filter(Boolean).forEach(file => fs.rm(file, { recursive: true, force: true }, () => {}));
+}
+
+function validatePdf(file) {
+  if (!file) throw new Error('Nenhum arquivo foi enviado.');
+  if (path.extname(file.originalname || '').toLowerCase() !== '.pdf') throw new Error('Este recurso aceita somente PDF.');
+}
+
+function safeFileId(fileId) {
+  const name = path.basename(String(fileId || ''));
+  if (!/^[0-9a-f-]{36}\.pdf$/i.test(name)) throw new Error('Identificador de arquivo inválido.');
+  return name;
 }
 
 function parseRanges(str, pageCount) {
-  // "1-3,5,7-8" -> array of arrays of 0-indexed page numbers, one group per PDF output
-  return str.split(',').map(s => s.trim()).filter(Boolean).map(part => {
-    const [a, b] = part.split('-').map(n => parseInt(n, 10));
-    const start = Math.max(1, a);
-    const end = Math.min(pageCount, b || a);
+  if (!String(str || '').trim()) return [];
+  return String(str).split(',').map(raw => {
+    const part = raw.trim();
+    const m = part.match(/^(\d+)(?:\s*-\s*(\d+))?$/);
+    if (!m) throw new Error(`Intervalo inválido: ${part}`);
+    const start = Number(m[1]);
+    const end = Number(m[2] || m[1]);
+    if (start < 1 || end < start || start > pageCount) throw new Error(`Página inválida no intervalo: ${part}`);
     const arr = [];
-    for (let i = start; i <= end; i++) arr.push(i - 1);
+    for (let p = start; p <= Math.min(end, pageCount); p++) arr.push(p - 1);
     return arr;
   });
 }
 
-async function sendFileAndCleanup(res, filePath, downloadName, extraFiles = []) {
+async function sendFile(res, filePath, downloadName, extra = [], contentType = 'application/octet-stream', headers = {}) {
   try {
-    // Envia o PDF diretamente na resposta antes de apagar o temporário.
-    // Isso evita falhas de download no Render causadas pelo res.download()
-    // enquanto o arquivo temporário é removido.
-    const data = await fs.promises.readFile(filePath);
-
-    res.status(200);
-    res.set({
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="${downloadName}"`,
-      'Content-Length': data.length,
-      'Cache-Control': 'no-store'
+    const stat = await fs.promises.stat(filePath);
+    res.status(200).set({
+      'Content-Type': contentType,
+      'Content-Disposition': `attachment; filename="${String(downloadName).replace(/"/g, '')}"`,
+      'Content-Length': String(stat.size),
+      'Cache-Control': 'no-store, max-age=0',
+      ...headers
     });
-
-    res.end(data);
+    fs.createReadStream(filePath).pipe(res);
+    res.on('finish', () => cleanup(filePath, ...extra));
   } catch (err) {
-    if (!res.headersSent) {
-      res.status(500).json({ error: err.message });
-    }
-  } finally {
-    cleanup(filePath, ...extraFiles);
+    cleanup(filePath, ...extra);
+    if (!res.headersSent) res.status(500).json({ error: err.message });
   }
 }
 
-// ---------- MERGE ----------
-app.post('/api/merge', upload.array('files'), async (req, res) => {
-  const inputs = req.files.map(f => f.path);
-  try {
-    const merged = await PDFDocument.create();
-    for (const file of req.files) {
-      const bytes = fs.readFileSync(file.path);
-      const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
-      const pages = await merged.copyPages(src, src.getPageIndices());
-      pages.forEach(p => merged.addPage(p));
-    }
-    const outBytes = await merged.save();
-    const outPath = path.join(TMP, uuid() + '.pdf');
-    fs.writeFileSync(outPath, outBytes);
-    sendFileAndCleanup(res, outPath, 'unido.pdf', inputs);
-  } catch (e) {
-    cleanup(...inputs);
-    res.status(500).json({ error: e.message });
+function waitForStreamClose(stream) {
+  return new Promise((resolve, reject) => {
+    stream.once('close', resolve);
+    stream.once('error', reject);
+  });
+}
+
+async function makeZipFromDir(dir, zipPath) {
+  const output = fs.createWriteStream(zipPath);
+  const archive = archiver('zip', { zlib: { level: 6 } });
+  const done = waitForStreamClose(output);
+  archive.on('error', err => output.destroy(err));
+  archive.pipe(output);
+  for (const file of fs.readdirSync(dir).filter(Boolean)) {
+    archive.file(path.join(dir, file), { name: file });
   }
+  await archive.finalize();
+  await done;
+}
+
+async function purgeOldFiles() {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const dir of [UP, TMP]) {
+    let entries = [];
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (_) { continue; }
+    await Promise.all(entries.map(async entry => {
+      const full = path.join(dir, entry.name);
+      try {
+        const stat = await fs.promises.stat(full);
+        if (stat.mtimeMs < cutoff) await fs.promises.rm(full, { recursive: true, force: true });
+      } catch (_) {}
+    }));
+  }
+}
+setInterval(() => purgeOldFiles().catch(() => {}), 30 * 60 * 1000).unref();
+purgeOldFiles().catch(() => {});
+
+// ---------- MERGE ----------
+app.post('/api/merge', upload.array('files', 50), async (req, res) => {
+  const inputs = (req.files || []).map(f => f.path);
+  try {
+    if (inputs.length < 2) throw new Error('Selecione pelo menos 2 PDFs.');
+    req.files.forEach(validatePdf);
+    const out = await PDFDocument.create();
+    for (const file of req.files) {
+      const src = await PDFDocument.load(await fs.promises.readFile(file.path), { ignoreEncryption: true });
+      const pages = await out.copyPages(src, src.getPageIndices());
+      pages.forEach(p => out.addPage(p));
+    }
+    const outPath = path.join(TMP, uuid() + '.pdf');
+    await fs.promises.writeFile(outPath, await out.save());
+    await sendFile(res, outPath, 'unido.pdf', inputs, 'application/pdf');
+  } catch (e) { cleanup(...inputs); if (!res.headersSent) res.status(500).json({ error: e.message }); }
 });
 
 // ---------- SPLIT ----------
 app.post('/api/split', upload.single('file'), async (req, res) => {
-  const inputPath = req.file.path;
+  const input = req.file?.path;
   try {
-    const bytes = fs.readFileSync(inputPath);
-    const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
-    const pageCount = src.getPageCount();
-    const ranges = req.body.ranges
-      ? parseRanges(req.body.ranges, pageCount)
-      : src.getPageIndices().map(i => [i]); // no ranges = one PDF per page
-
+    validatePdf(req.file);
+    const src = await PDFDocument.load(await fs.promises.readFile(input), { ignoreEncryption: true });
+    const ranges = parseRanges(req.body.ranges, src.getPageCount());
+    const groups = ranges.length ? ranges : src.getPageIndices().map(i => [i]);
+    if (groups.length > 100) throw new Error('Limite de 100 partes por operação.');
     const zipPath = path.join(TMP, uuid() + '.zip');
     const output = fs.createWriteStream(zipPath);
-    const archive = archiver('zip');
+    const archive = archiver('zip', { zlib: { level: 6 } });
+    const done = waitForStreamClose(output);
+    archive.on('error', err => output.destroy(err));
     archive.pipe(output);
-
-    for (let i = 0; i < ranges.length; i++) {
+    for (let i = 0; i < groups.length; i++) {
       const doc = await PDFDocument.create();
-      const pages = await doc.copyPages(src, ranges[i]);
+      const pages = await doc.copyPages(src, groups[i]);
       pages.forEach(p => doc.addPage(p));
-      const outBytes = await doc.save();
-      archive.append(Buffer.from(outBytes), { name: `parte_${i + 1}.pdf` });
+      archive.append(Buffer.from(await doc.save()), { name: `parte_${i + 1}.pdf` });
     }
     await archive.finalize();
-    output.on('close', () => sendFileAndCleanup(res, zipPath, 'partes.zip', [inputPath]));
-  } catch (e) {
-    cleanup(inputPath);
-    res.status(500).json({ error: e.message });
-  }
+    await done;
+    await sendFile(res, zipPath, 'partes.zip', [input], 'application/zip');
+  } catch (e) { cleanup(input); if (!res.headersSent) res.status(500).json({ error: e.message }); }
 });
 
-// ---------- PAGE OPS: delete / rotate / reorder ----------
+// ---------- PAGE OPS ----------
 app.post('/api/pages/edit', upload.single('file'), async (req, res) => {
-  // body: operations = JSON { keepOrder: [1,3,2], rotations: {"1": 90}, delete: [4] }
-  const inputPath = req.file.path;
+  const input = req.file?.path;
   try {
-    const bytes = fs.readFileSync(inputPath);
-    const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
-    const pageCount = src.getPageCount();
+    validatePdf(req.file);
+    const src = await PDFDocument.load(await fs.promises.readFile(input), { ignoreEncryption: true });
     const ops = JSON.parse(req.body.operations || '{}');
-    const deleteSet = new Set((ops.delete || []).map(n => n - 1));
-    let order = ops.keepOrder ? ops.keepOrder.map(n => n - 1) : src.getPageIndices();
-    order = order.filter(i => !deleteSet.has(i));
-
+    const pageCount = src.getPageCount();
+    let order = Array.isArray(ops.keepOrder) ? ops.keepOrder.map(Number).map(n => n - 1) : src.getPageIndices();
+    const deleted = new Set((Array.isArray(ops.delete) ? ops.delete : []).map(Number).map(n => n - 1));
+    if (order.some(i => !Number.isInteger(i) || i < 0 || i >= pageCount)) throw new Error('Ordem de páginas inválida.');
+    order = order.filter(i => !deleted.has(i));
+    if (!order.length) throw new Error('O PDF final precisa ter pelo menos uma página.');
     const out = await PDFDocument.create();
     const pages = await out.copyPages(src, order);
-    pages.forEach((p, idx) => {
-      const originalPageNum = order[idx] + 1;
-      const rot = ops.rotations && ops.rotations[originalPageNum];
-      if (rot) p.setRotation(degrees((p.getRotation().angle + rot) % 360));
-      out.addPage(p);
+    pages.forEach((page, idx) => {
+      const original = order[idx] + 1;
+      const rotation = Number(ops.rotations?.[original] || 0);
+      if (rotation) page.setRotation(degrees((page.getRotation().angle + rotation) % 360));
+      out.addPage(page);
     });
-    const outBytes = await out.save();
     const outPath = path.join(TMP, uuid() + '.pdf');
-    fs.writeFileSync(outPath, outBytes);
-    sendFileAndCleanup(res, outPath, 'editado.pdf', [inputPath]);
-  } catch (e) {
-    cleanup(inputPath);
-    res.status(500).json({ error: e.message });
-  }
+    await fs.promises.writeFile(outPath, await out.save());
+    await sendFile(res, outPath, 'editado.pdf', [input], 'application/pdf');
+  } catch (e) { cleanup(input); if (!res.headersSent) res.status(500).json({ error: e.message }); }
 });
 
-// ---------- COMPRESS (ghostscript) ----------
+// ---------- COMPRESS ----------
 app.post('/api/compress', upload.single('file'), async (req, res) => {
-  const inputPath = req.file.path;
-  const level = req.body.level || 'ebook'; // screen | ebook | printer
-  const outPath = path.join(TMP, uuid() + '.pdf');
+  const input = req.file?.path;
+  const output = path.join(TMP, uuid() + '.pdf');
   try {
-    await run('gs', [
-      '-sDEVICE=pdfwrite', '-dCompatibilityLevel=1.4',
-      `-dPDFSETTINGS=/${level}`,
-      '-dNOPAUSE', '-dQUIET', '-dBATCH',
-      `-sOutputFile=${outPath}`, inputPath
-    ]);
-    sendFileAndCleanup(res, outPath, 'comprimido.pdf', [inputPath]);
-  } catch (e) {
-    cleanup(inputPath, outPath);
-    res.status(500).json({ error: e.message });
-  }
+    validatePdf(req.file);
+    const level = String(req.body.level || 'ebook').toLowerCase();
+    if (!['screen', 'ebook', 'printer', 'prepress', 'default'].includes(level)) throw new Error('Nível de compressão inválido.');
+    const originalSize = (await fs.promises.stat(input)).size;
+    await run('gs', ['-sDEVICE=pdfwrite', '-dCompatibilityLevel=1.4', `-dPDFSETTINGS=/${level}`, '-dNOPAUSE', '-dQUIET', '-dBATCH', `-sOutputFile=${output}`, input], { timeout: 240000 });
+    const compressedSize = (await fs.promises.stat(output)).size;
+    const reduction = originalSize ? Math.max(0, (1 - compressedSize / originalSize) * 100) : 0;
+    await sendFile(res, output, 'comprimido.pdf', [input], 'application/pdf', {
+      'X-Original-Size': String(originalSize),
+      'X-Compressed-Size': String(compressedSize),
+      'X-Compression-Percent': reduction.toFixed(2)
+    });
+  } catch (e) { cleanup(input, output); if (!res.headersSent) res.status(500).json({ error: e.message }); }
 });
 
-// ---------- CONVERT: images -> pdf ----------
-app.post('/api/convert/images-to-pdf', upload.array('files'), async (req, res) => {
-  const inputs = req.files.map(f => f.path);
+// ---------- IMAGES -> PDF ----------
+app.post('/api/convert/images-to-pdf', upload.array('files', 50), async (req, res) => {
+  const inputs = (req.files || []).map(f => f.path);
   try {
-    const sharp = require('sharp');
+    if (!req.files.length) throw new Error('Selecione pelo menos uma imagem.');
     const doc = await PDFDocument.create();
+    const allowed = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tif', '.tiff']);
     for (const file of req.files) {
-      const buf = await sharp(file.path).jpeg({ quality: 90 }).toBuffer();
+      if (!allowed.has(path.extname(file.originalname || '').toLowerCase())) throw new Error(`Imagem inválida: ${file.originalname}`);
+      const sharp = require('sharp');
+      const buf = await sharp(file.path).jpeg({ quality: 90, mozjpeg: true }).toBuffer();
       const img = await doc.embedJpg(buf);
       const page = doc.addPage([img.width, img.height]);
       page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
     }
-    const outBytes = await doc.save();
     const outPath = path.join(TMP, uuid() + '.pdf');
-    fs.writeFileSync(outPath, outBytes);
-    sendFileAndCleanup(res, outPath, 'imagens.pdf', inputs);
-  } catch (e) {
-    cleanup(...inputs);
-    res.status(500).json({ error: e.message });
-  }
+    await fs.promises.writeFile(outPath, await doc.save());
+    await sendFile(res, outPath, 'imagens.pdf', inputs, 'application/pdf');
+  } catch (e) { cleanup(...inputs); if (!res.headersSent) res.status(500).json({ error: e.message }); }
 });
 
-// ---------- CONVERT: pdf -> images (poppler) ----------
+// ---------- PDF -> IMAGES ----------
 app.post('/api/convert/pdf-to-images', upload.single('file'), async (req, res) => {
-  const inputPath = req.file.path;
-  const format = (req.body.format || 'png').toLowerCase();
+  const input = req.file?.path;
   const workDir = path.join(TMP, uuid());
-  fs.mkdirSync(workDir);
   try {
-    const flag = format === 'jpg' || format === 'jpeg' ? '-jpeg' : '-png';
-    await run('pdftoppm', [flag, '-r', '150', inputPath, path.join(workDir, 'page')]);
+    validatePdf(req.file);
+    const format = String(req.body.format || 'png').toLowerCase();
+    if (!['png', 'jpg', 'jpeg'].includes(format)) throw new Error('Formato de imagem inválido.');
+    await fs.promises.mkdir(workDir, { recursive: true });
+    const flag = format === 'png' ? '-png' : '-jpeg';
+    await run('pdftocairo', [flag, '-r', '150', '-jpegopt', 'quality=88', input, path.join(workDir, 'pagina')], { timeout: 240000 });
+    const files = fs.readdirSync(workDir).filter(f => /\.(png|jpg|jpeg)$/i.test(f)).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    if (!files.length) throw new Error('Nenhuma página foi convertida.');
     const zipPath = path.join(TMP, uuid() + '.zip');
-    const output = fs.createWriteStream(zipPath);
-    const archive = archiver('zip');
-    archive.pipe(output);
-    fs.readdirSync(workDir).forEach(f => archive.file(path.join(workDir, f), { name: f }));
-    await archive.finalize();
-    output.on('close', () => sendFileAndCleanup(res, zipPath, 'paginas.zip', [inputPath, workDir]));
-  } catch (e) {
-    cleanup(inputPath, workDir);
-    res.status(500).json({ error: e.message });
-  }
+    await makeZipFromDir(workDir, zipPath);
+    await sendFile(res, zipPath, 'paginas.zip', [input, workDir], 'application/zip');
+  } catch (e) { cleanup(input, workDir); if (!res.headersSent) res.status(500).json({ error: e.message }); }
 });
 
-// ---------- CONVERT: office <-> pdf (LibreOffice headless) ----------
+// ---------- OFFICE -> PDF / PDF -> OFFICE ----------
 app.post('/api/convert/office', upload.single('file'), async (req, res) => {
-  // target: pdf | docx | pptx | xlsx | odt
-  const inputPath = req.file.path;
-  const target = (req.body.target || 'pdf').toLowerCase();
+  const input = req.file?.path;
   const workDir = path.join(TMP, uuid());
-  fs.mkdirSync(workDir);
   try {
-    const args = ['--headless', '--norestore'];
-    // Converting FROM pdf TO an editable format needs an explicit import filter,
-    // otherwise LibreOffice can't find an export chain and silently fails.
-    if (path.extname(inputPath).toLowerCase() === '.pdf' && target !== 'pdf') {
-      args.push('--infilter=writer_pdf_import');
-    }
-    args.push('--convert-to', target, '--outdir', workDir, inputPath);
-    await run('soffice', args);
-    const produced = fs.readdirSync(workDir)[0];
-    if (!produced) throw new Error('A conversão não gerou saída. Verifique o formato do arquivo.');
-    const outPath = path.join(workDir, produced);
-    sendFileAndCleanup(res, outPath, produced, [inputPath, workDir]);
-  } catch (e) {
-    cleanup(inputPath, workDir);
-    res.status(500).json({ error: e.message });
-  }
+    if (!req.file) throw new Error('Nenhum arquivo foi enviado.');
+    const target = String(req.body.target || 'pdf').toLowerCase();
+    if (!['pdf', 'docx', 'pptx', 'xlsx', 'odt'].includes(target)) throw new Error('Formato de saída inválido.');
+    await fs.promises.mkdir(workDir, { recursive: true });
+    const args = ['--headless', '--norestore', '--nolockcheck', '--nodefault', '--nofirststartwizard'];
+    const ext = path.extname(input).toLowerCase();
+    if (ext === '.pdf' && target !== 'pdf') args.push('--infilter=writer_pdf_import');
+    args.push('--convert-to', target, '--outdir', workDir, input);
+    await run('soffice', args, { timeout: 240000 });
+    const produced = fs.readdirSync(workDir).filter(f => !f.startsWith('.~lock')).filter(f => fs.statSync(path.join(workDir, f)).isFile());
+    if (!produced.length) throw new Error('A conversão não gerou saída. Verifique o formato do arquivo e os logs do servidor.');
+    const outName = produced[0];
+    const outPath = path.join(workDir, outName);
+    const mime = target === 'pdf' ? 'application/pdf' : 'application/octet-stream';
+    await sendFile(res, outPath, outName, [input, workDir], mime);
+  } catch (e) { cleanup(input, workDir); if (!res.headersSent) res.status(500).json({ error: e.message }); }
 });
 
-// ---------- INSPECT: page count + thumbnails for the editor ----------
+// ---------- INSPECT ----------
 app.post('/api/inspect', upload.single('file'), async (req, res) => {
-  const inputPath = req.file.path;
-  let doc = null;
+  const input = req.file?.path;
+  let previewDir = null;
+  let finalName = null;
   try {
-    const bytes = fs.readFileSync(inputPath);
+    validatePdf(req.file);
+    const bytes = await fs.promises.readFile(input);
     const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
     const pageCount = src.getPageCount();
-    const pageSizes = src.getPages().map(p => {
-      const { width, height } = p.getSize();
-      return { width, height };
-    });
-
+    const pageSizes = src.getPages().map(p => { const s = p.getSize(); return { width: s.width, height: s.height }; });
     const id = uuid();
-    const finalName = id + '.pdf';
-    fs.copyFileSync(inputPath, path.join(UP, finalName));
+    finalName = id + '.pdf';
+    await fs.promises.copyFile(input, path.join(UP, finalName));
+    previewDir = path.join(TMP, 'thumbs_' + id);
+    await fs.promises.mkdir(previewDir, { recursive: true });
 
-    // O editor usa uma prévia rasterizada a 120 DPI. As imagens são
-    // devolvidas como data URLs para que o navegador não precise fazer
-    // uma segunda requisição ao armazenamento temporário do Render.
-    const previewDir = path.join(UP, 'thumbs_' + id);
-    fs.mkdirSync(previewDir, { recursive: true });
+    // Uma única chamada ao Poppler para todas as páginas, com tamanho de prévia controlado.
+    await run('pdftocairo', ['-jpeg', '-jpegopt', 'quality=76', '-scale-to', '1100', input, path.join(previewDir, 'page')], { timeout: 240000 });
+    const files = fs.readdirSync(previewDir).filter(f => /^page-\d+\.jpg$/i.test(f)).sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
+    const thumbnails = files.map(f => 'data:image/jpeg;base64,' + fs.readFileSync(path.join(previewDir, f)).toString('base64'));
 
-    await run('pdftoppm', [
-      '-jpeg',
-      '-jpegopt', 'quality=82',
-      '-r', '120',
-      inputPath,
-      path.join(previewDir, 'page')
-    ]);
-
-    const files = fs.readdirSync(previewDir)
-      .filter(f => /^page-\d+\.jpg$/i.test(f))
-      .sort((a,b) => {
-        const na = Number(a.match(/(\d+)/)[1]);
-        const nb = Number(b.match(/(\d+)/)[1]);
-        return na - nb;
-      });
-
-    const thumbnails = files.map(file => {
-      const jpg = fs.readFileSync(path.join(previewDir, file));
-      return 'data:image/jpeg;base64,' + jpg.toString('base64');
-    });
-
-    // Coordenadas dos textos em pontos (72 DPI), com origem no topo.
-    // O pdftotext -bbox fornece exatamente esse sistema de coordenadas.
     const textBoxes = [];
     try {
       const bboxPath = path.join(previewDir, 'bbox.html');
-      await run('pdftotext', [
-        '-bbox', '-enc', 'UTF-8', inputPath, bboxPath
-      ]);
-      const html = fs.readFileSync(bboxPath, 'utf8');
+      await run('pdftotext', ['-bbox', '-enc', 'UTF-8', input, bboxPath], { timeout: 120000 });
+      const html = await fs.promises.readFile(bboxPath, 'utf8');
       const pages = [...html.matchAll(/<page[^>]*>([\s\S]*?)<\/page>/gi)];
-      const PT_TO_PX = 120 / 72;
-
-      pages.forEach((pageMatch, pageIndex) => {
-        const words = [...pageMatch[1].matchAll(
-          /<word[^>]*xMin="([0-9.]+)"[^>]*yMin="([0-9.]+)"[^>]*xMax="([0-9.]+)"[^>]*yMax="([0-9.]+)"[^>]*>([\s\S]*?)<\/word>/gi
-        )];
-
+      const PT_TO_PX = 1100 / 612;
+      pages.forEach((match, pageIndex) => {
+        const words = [...match[1].matchAll(/<word[^>]*xMin="([0-9.]+)"[^>]*yMin="([0-9.]+)"[^>]*xMax="([0-9.]+)"[^>]*yMax="([0-9.]+)"[^>]*>([\s\S]*?)<\/word>/gi)];
         words.forEach((w, wordIndex) => {
           const text = w[5].replace(/<[^>]+>/g, '').trim();
-          if(!text) return;
-
-          const pdfX = parseFloat(w[1]);
-          const pdfY = parseFloat(w[2]);
-          const pdfWidth = Math.max(1, parseFloat(w[3]) - pdfX);
-          const pdfHeight = Math.max(1, parseFloat(w[4]) - pdfY);
-
-          textBoxes.push({
-            id: `p${pageIndex + 1}-w${wordIndex + 1}`,
-            page: pageIndex + 1,
-            x: pdfX * PT_TO_PX,
-            y: pdfY * PT_TO_PX,
-            width: pdfWidth * PT_TO_PX,
-            height: pdfHeight * PT_TO_PX,
-            pdfX, pdfY, pdfWidth, pdfHeight,
-            text,
-            fontSize: Math.max(6, pdfHeight)
-          });
+          if (!text) return;
+          const pdfX = parseFloat(w[1]), pdfY = parseFloat(w[2]);
+          const pdfWidth = Math.max(1, parseFloat(w[3]) - pdfX), pdfHeight = Math.max(1, parseFloat(w[4]) - pdfY);
+          textBoxes.push({ id: `p${pageIndex + 1}-w${wordIndex + 1}`, page: pageIndex + 1, x: pdfX * PT_TO_PX, y: pdfY * PT_TO_PX, width: pdfWidth * PT_TO_PX, height: pdfHeight * PT_TO_PX, pdfX, pdfY, pdfWidth, pdfHeight, text, fontSize: Math.max(6, pdfHeight) });
         });
       });
-    } catch(err) {
-      console.log('PDF sem camada de texto ou falha na extração:', err.message);
-    }
-
+    } catch (_) {}
     res.json({ fileId: finalName, pageCount, pageSizes, thumbnails, textBoxes });
-
-    // A prévia já foi enviada como data URL; depois da resposta podemos
-    // remover as imagens temporárias sem quebrar o navegador.
-    cleanup(previewDir);
-  } catch(e) {
-    console.error('Erro no /api/inspect:', e);
-    res.status(500).json({ error: e.message });
+  } catch (e) {
+    cleanup(finalName ? path.join(UP, finalName) : null);
+    if (!res.headersSent) res.status(500).json({ error: e.message });
   } finally {
-    cleanup(inputPath);
+    cleanup(input, previewDir);
   }
 });
 
-// ---------- PREVIEW: entrega as páginas renderizadas do editor ----------
-app.get('/api/preview/:id/:page', (req, res) => {
+// ---------- PREVIEW ----------
+app.get('/api/preview/:id/:page', async (req, res) => {
+  let dir = null;
   try {
-    const id = req.params.id.replace(/\.pdf$/i, '');
+    const id = safeFileId(req.params.id);
     const page = Number(req.params.page);
-
-    if(!Number.isInteger(page) || page < 1){
-      return res.status(400).send('Página inválida.');
-    }
-
-    const filePath = path.join(
-      UP,
-      'thumbs_' + id,
-      `p-${page}.png`
-    );
-
-    if(!fs.existsSync(filePath)){
-      return res.status(404).send('Página do PDF não encontrada.');
-    }
-
-    res.type('png').sendFile(path.resolve(filePath));
-  } catch(e) {
-    res.status(500).send(e.message);
-  }
+    if (!Number.isInteger(page) || page < 1) return res.status(400).send('Página inválida.');
+    const pdfPath = path.join(UP, id);
+    if (!fs.existsSync(pdfPath)) return res.status(404).send('PDF não encontrado.');
+    dir = path.join(TMP, uuid());
+    await fs.promises.mkdir(dir, { recursive: true });
+    const prefix = path.join(dir, 'page');
+    await run('pdftocairo', ['-f', String(page), '-l', String(page), '-singlefile', '-png', '-scale-to', '1600', pdfPath, prefix], { timeout: 120000 });
+    const image = prefix + '.png';
+    if (!fs.existsSync(image)) return res.status(404).send('Página não encontrada.');
+    res.type('png').sendFile(path.resolve(image), () => cleanup(dir));
+  } catch (e) { cleanup(dir); if (!res.headersSent) res.status(500).send(e.message); }
 });
 
-app.use('/uploads', express.static(UP));
+app.use('/uploads', express.static(UP, { index: false, dotfiles: 'deny', maxAge: '5m' }));
 
-// ---------- EDIT: add text / image overlay ----------
+// ---------- EDITOR: real redaction + replacement text ----------
 app.post('/api/edit/annotate', upload.single('image'), async (req, res) => {
   try {
-    const { fileId, annotations } = req.body;
-    const filePath = path.join(UP, fileId);
-
-    if(!fs.existsSync(filePath)) {
-      return res.status(400).json({ error: 'Arquivo não encontrado. Reenvie o PDF.' });
-    }
-
-    const anns = JSON.parse(annotations || '[]');
-    const originalBytes = fs.readFileSync(filePath);
-
-    // ================================================================
-    // 1) REDAÇÃO REAL / IRREVERSÍVEL COM MUPDF
-    // ================================================================
-    // MuPDF trabalha em pontos com origem no canto superior esquerdo,
-    // que é o mesmo sistema usado pelos boxes extraídos pelo pdftotext.
-    // Assim não existe a conversão pixels -> pontos que estava causando
-    // deslocamentos nas versões anteriores.
+    const fileName = safeFileId(req.body.fileId);
+    const filePath = path.join(UP, fileName);
+    if (!fs.existsSync(filePath)) return res.status(400).json({ error: 'Arquivo não encontrado. Reenvie o PDF.' });
+    const anns = JSON.parse(req.body.annotations || '[]');
+    if (!Array.isArray(anns) || anns.length > 500) throw new Error('Quantidade de anotações inválida.');
     const mupdf = await import('mupdf');
-    const document = mupdf.Document.openDocument(originalBytes, 'application/pdf');
-    const pdfDoc = document.asPDF();
-    const redactedPages = new Set();
-
+    const document = mupdf.Document.openDocument(await fs.promises.readFile(filePath), 'application/pdf');
+    const pdf = document.asPDF();
+    const pagesToRedact = new Set();
     try {
-      for(const a of anns) {
-        if(!a || !a.id || !String(a.id).startsWith('p')) continue;
-        if(a.deleted !== true && a.text === undefined) continue;
-
+      for (const a of anns) {
+        if (!a || !String(a.id || '').startsWith('p')) continue;
         const pageIndex = Number(a.page) - 1;
-        if(!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= pdfDoc.countPages()) continue;
-
-        const x = Number(a.pdfX ?? a.x);
-        const y = Number(a.pdfY ?? a.y);
-        const w = Number(a.pdfWidth ?? a.width);
-        const h = Number(a.pdfHeight ?? a.height);
-
-        if(![x,y,w,h].every(Number.isFinite) || w <= 0 || h <= 0) continue;
-
-        const page = pdfDoc.loadPage(pageIndex);
-        const bounds = page.getBounds();
-        const pad = 1.5;
-        const x1 = Math.max(bounds[0], x - pad);
-        const y1 = Math.max(bounds[1], y - pad);
-        const x2 = Math.min(bounds[2], x + w + pad);
-        const y2 = Math.min(bounds[3], y + h + pad);
-
-        if(x2 > x1 && y2 > y1) {
-          const redact = page.createAnnotation('Redact');
-          redact.setRect([x1, y1, x2, y2]);
-          redact.update();
-          redactedPages.add(pageIndex);
-        }
+        const x = Number(a.pdfX ?? a.x), y = Number(a.pdfY ?? a.y), w = Number(a.pdfWidth ?? a.width), h = Number(a.pdfHeight ?? a.height);
+        if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= pdf.countPages() || ![x,y,w,h].every(Number.isFinite) || w <= 0 || h <= 0) continue;
+        const page = pdf.loadPage(pageIndex), bounds = page.getBounds(), pad = 1.5;
+        const rect = [Math.max(bounds[0], x - pad), Math.max(bounds[1], y - pad), Math.min(bounds[2], x + w + pad), Math.min(bounds[3], y + h + pad)];
+        const red = page.createAnnotation('Redact'); red.setRect(rect); red.update(); pagesToRedact.add(pageIndex); page.destroy();
+      }
+      for (const index of pagesToRedact) {
+        const page = pdf.loadPage(index);
+        page.applyRedactions(false, mupdf.PDFPage.REDACT_IMAGE_PIXELS, mupdf.PDFPage.REDACT_LINE_ART_REMOVE_IF_COVERED, mupdf.PDFPage.REDACT_TEXT_REMOVE);
         page.destroy();
       }
+      var redacted = Buffer.from(pdf.saveToBuffer('garbage=4,compress=yes').asUint8Array());
+    } finally { document.destroy(); }
 
-      // Remove permanentemente texto, pixels de imagens e line art
-      // cobertos pela região redigida.
-      for(const pageIndex of redactedPages) {
-        const page = pdfDoc.loadPage(pageIndex);
-        page.applyRedactions(
-          false,
-          mupdf.PDFPage.REDACT_IMAGE_PIXELS,
-          mupdf.PDFPage.REDACT_LINE_ART_REMOVE_IF_COVERED,
-          mupdf.PDFPage.REDACT_TEXT_REMOVE
-        );
-        page.destroy();
-      }
-
-      // garbage=4 evita deixar objetos órfãos da versão anterior do PDF.
-      var redactedBytes = Buffer.from(
-        pdfDoc.saveToBuffer('garbage=4,compress=yes').asUint8Array()
-      );
-    } finally {
-      document.destroy();
+    const out = await PDFDocument.load(redacted, { ignoreEncryption: true });
+    const font = await out.embedFont(StandardFonts.Helvetica);
+    for (const a of anns) {
+      if (!a || !String(a.id || '').startsWith('p')) continue;
+      const page = out.getPage(Number(a.page) - 1);
+      if (!page) continue;
+      const ph = page.getHeight();
+      const x = Number(a.pdfX ?? a.x) || 0, y = Number(a.pdfY ?? a.y) || 0;
+      const w = Number(a.pdfWidth ?? a.width) || 20, h = Number(a.pdfHeight ?? a.height) || 12;
+      const size = Math.max(4, Math.min(Number(a.fontSize) || h, h));
+      page.drawRectangle({ x: Math.max(0, x - 1.5), y: Math.max(0, ph - y - h - 1.5), width: w + 3, height: h + 3, color: rgb(1,1,1), borderWidth: 0 });
+      if (a.deleted !== true && String(a.text || '').length) page.drawText(String(a.text), { x, y: ph - y - size, size, font, color: rgb(0.1,0.1,0.1), maxWidth: Math.max(10, w) });
     }
-
-    // ================================================================
-    // 2) APARÊNCIA FINAL E TEXTO DE SUBSTITUIÇÃO
-    // ================================================================
-    // A redação já aconteceu acima. A caixa branca abaixo é apenas visual;
-    // o conteúdo antigo já não existe no PDF.
-    const outDoc = await PDFDocument.load(redactedBytes, { ignoreEncryption: true });
-    const font = await outDoc.embedFont(StandardFonts.Helvetica);
-
-    for(const a of anns) {
-      if(!a || !a.id || !String(a.id).startsWith('p')) continue;
-
-      const page = outDoc.getPage(Number(a.page) - 1);
-      if(!page) continue;
-
-      const pageHeight = page.getHeight();
-      const x = Number(a.pdfX ?? a.x) || 0;
-      const y = Number(a.pdfY ?? a.y) || 0;
-      const w = Number(a.pdfWidth ?? a.width) || 20;
-      const h = Number(a.pdfHeight ?? a.height) || 12;
-      const fontSize = Math.max(4, Math.min(Number(a.fontSize) || h, h));
-      const pad = 1.5;
-
-      page.drawRectangle({
-        x: Math.max(0, x - pad),
-        y: Math.max(0, pageHeight - y - h - pad),
-        width: w + pad * 2,
-        height: h + pad * 2,
-        color: rgb(1,1,1),
-        borderWidth: 0
-      });
-
-      if(a.deleted !== true && String(a.text || '').length) {
-        page.drawText(String(a.text), {
-          x,
-          y: pageHeight - y - fontSize,
-          size: fontSize,
-          font,
-          color: rgb(0.1,0.1,0.1),
-          maxWidth: Math.max(10, w)
-        });
-      }
-    }
-
-    // Limpa metadados comuns para evitar que informações antigas continuem
-    // expostas por propriedades do documento.
-    try {
-      outDoc.setTitle('');
-      outDoc.setAuthor('');
-      outDoc.setSubject('');
-      outDoc.setKeywords([]);
-    } catch(_) {}
-
-    const outBytes = await outDoc.save({ useObjectStreams: false });
     const outPath = path.join(TMP, uuid() + '.pdf');
-    fs.writeFileSync(outPath, outBytes);
-
-    sendFileAndCleanup(res, outPath, 'editado.pdf', req.file ? [req.file.path] : []);
-  } catch(e) {
-    console.error('Erro na edição/redação:', e);
-    if(req.file?.path) cleanup(req.file.path);
-    res.status(500).json({ error: e.message });
-  }
+    await fs.promises.writeFile(outPath, await out.save({ useObjectStreams: false }));
+    await sendFile(res, outPath, 'editado.pdf', [], 'application/pdf');
+  } catch (e) { if (!res.headersSent) res.status(500).json({ error: e.message }); }
 });
 
-app.listen(PORT, () => console.log(`PDFTools rodando em http://localhost:${PORT}`));
+app.get('/api/health', (req, res) => res.json({ ok: true, uptime: Math.round(process.uptime()), timestamp: new Date().toISOString() }));
+
+app.use((err, req, res, next) => {
+  cleanup(req.file?.path, ...(req.files || []).map(f => f.path));
+  if (err instanceof multer.MulterError) return res.status(413).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'Arquivo maior que 200 MB.' : `Upload inválido: ${err.message}` });
+  if (err) return res.status(400).json({ error: err.message || 'Erro ao processar a solicitação.' });
+  next();
+});
+
+app.listen(PORT, () => console.log(`PDFTools rodando na porta ${PORT}`));
