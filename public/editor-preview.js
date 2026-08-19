@@ -1,6 +1,8 @@
-// Mantém a prévia de alta resolução sincronizada com a página atual.
+// Troca apenas a imagem visual do editor pela prévia de alta resolução.
+// A camada de coordenadas continua usando o mesmo sistema de 1600px.
 (() => {
   let fileId = null;
+  let lastPage = 0;
 
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
@@ -22,37 +24,24 @@
   }
 
   function upgrade(img) {
-    if (!fileId || !img) return;
-
+    if (!fileId || !img || img.dataset.hq === '1') return;
     const src = img.getAttribute('src') || '';
+    if (!src.startsWith('data:image/')) return;
+
     const page = currentPage();
     if (!Number.isInteger(page) || page < 1) return;
 
-    // O mesmo elemento <img> é reutilizado quando o usuário troca de página.
-    // A prévia HQ precisa acompanhar essa mudança.
-    if (img.dataset.hqPage === String(page) && src.includes('/api/preview/')) return;
-    if (img.dataset.loadingHq === '1') return;
-
-    const originalSrc = src.startsWith('data:image/') ? src : img.dataset.originalSrc;
-    if (!originalSrc && !src.includes('/api/preview/')) return;
-
-    img.dataset.loadingHq = '1';
+    img.dataset.hq = '1';
+    img.dataset.originalSrc = src;
     img.dataset.hqPage = String(page);
-    if (originalSrc) img.dataset.originalSrc = originalSrc;
-
-    const hqUrl = `/api/preview/${encodeURIComponent(fileId)}/${page}`;
+    img.src = `/api/preview/${encodeURIComponent(fileId)}/${page}`;
 
     img.onerror = () => {
-      img.dataset.loadingHq = '0';
-      img.onerror = null;
-      if (img.dataset.originalSrc) img.src = img.dataset.originalSrc;
+      if (img.dataset.originalSrc) {
+        img.onerror = null;
+        img.src = img.dataset.originalSrc;
+      }
     };
-
-    img.onload = () => {
-      img.dataset.loadingHq = '0';
-    };
-
-    img.src = hqUrl;
   }
 
   function scan() {
@@ -60,13 +49,7 @@
   }
 
   const observer = new MutationObserver(scan);
-  observer.observe(document.body, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['src']
-  });
-
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
   window.addEventListener('load', scan);
-  setInterval(scan, 300);
+  setInterval(scan, 500);
 })();
