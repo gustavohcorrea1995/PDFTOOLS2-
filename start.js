@@ -4,8 +4,6 @@ const Module = require('module');
 const path = require('path');
 
 // Poppler's -jpegopt is valid only for JPEG output.
-// Keep the existing server implementation intact while normalizing
-// PDF -> PNG arguments at process start.
 const originalExecFile = childProcess.execFile;
 childProcess.execFile = function patchedExecFile(command, args, options, callback) {
   if (command === 'pdftocairo' && Array.isArray(args)) {
@@ -27,19 +25,18 @@ let source = fs.readFileSync(serverPath, 'utf8');
 /*
  * EDITOR TEXT GEOMETRY
  *
- * Do not rely on the order of xMin/yMin/xMax/yMax attributes emitted by
- * Poppler. Different Poppler versions can serialize the attributes in a
- * different order. The old regex assumed one exact order and silently lost
- * words that did not match it.
+ * The previous implementation assumed that Poppler always emitted the
+ * xMin/yMin/xMax/yMax attributes in one fixed order. That is not guaranteed,
+ * so some words were silently omitted from the editor.
  *
- * We also use -bbox-layout. It gives us every extracted <word> while keeping
- * the page boundaries. For selectable PDF text this is the authoritative
- * text geometry available from Poppler.
+ * We now use -bbox-layout and parse every <word> independently, reading the
+ * attributes by name. This makes the editor's selectable layer include every
+ * text word that Poppler can extract from the PDF, regardless of attribute
+ * order or Poppler version.
  *
- * The preview is rendered with pdftocairo -scale-to 1100. Each page gets its
- * own render scale: 1100 / max(pageWidth, pageHeight). This makes the PDF
- * coordinates and preview pixels share the same coordinate system before the
- * browser applies its responsive CSS scale.
+ * The preview uses pdftocairo -scale-to 1100, so each page has its own exact
+ * render scale: 1100 / max(pageWidth, pageHeight). PDF-space coordinates are
+ * retained separately for the real edit operation.
  */
 const replacement = `const textBoxes = [];
     try {
@@ -59,7 +56,7 @@ const replacement = `const textBoxes = [];
         .trim();
 
       const attr = (attrs, name) => {
-        const match = String(attrs || '').match(new RegExp('\\\\b' + name + '\\\\s*=\\\\s*[\\\"\\\\\']([^\\\"\\\\\']+)[\\\"\\\\\']', 'i'));
+        const match = String(attrs || '').match(new RegExp("\\\\b" + name + "\\\\s*=\\\\s*['\\\"]([^'\\\"]+)['\\\"]", 'i'));
         return match ? Number(match[1]) : NaN;
       };
 
@@ -67,7 +64,6 @@ const replacement = `const textBoxes = [];
         const pageSize = pageSizes[pageIndex] || { width: 612, height: 792 };
         const renderScale = 1100 / Math.max(pageSize.width, pageSize.height);
         const pageMarkup = match[1];
-
         const wordMatches = [...pageMarkup.matchAll(/<word\\b([^>]*)>([\\s\\S]*?)<\\/word>/gi)];
         let wordIndex = 0;
 
@@ -91,12 +87,10 @@ const replacement = `const textBoxes = [];
           textBoxes.push({
             id: \`p\${pageIndex + 1}-w\${wordIndex}\`,
             page: pageIndex + 1,
-            // Preview-space coordinates.
             x: pdfX * renderScale,
             y: pdfY * renderScale,
             width: pdfWidth * renderScale,
             height: pdfHeight * renderScale,
-            // Original PDF coordinates used when saving the edit.
             pdfX,
             pdfY,
             pdfWidth,
