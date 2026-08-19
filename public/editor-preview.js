@@ -3,6 +3,8 @@
 (() => {
   let fileId = null;
   let requestVersion = 0;
+  const pageCache = new Map();
+  const pending = new Map();
 
   const originalFetch = window.fetch.bind(window);
   window.fetch = async (...args) => {
@@ -11,7 +13,11 @@
       const url = typeof args[0] === 'string' ? args[0] : args[0]?.url || '';
       if (url.includes('/api/inspect') && response.ok) {
         const data = await response.clone().json();
-        if (data?.fileId) fileId = data.fileId;
+        if (data?.fileId) {
+          fileId = data.fileId;
+          pageCache.clear();
+          pending.clear();
+        }
       }
     } catch (_) {}
     return response;
@@ -31,6 +37,33 @@
     window.dispatchEvent(new Event('resize'));
   }
 
+  async function getPreviewUrl(page) {
+    const key = `${fileId}:${page}`;
+    if (pageCache.has(key)) return pageCache.get(key);
+    if (pending.has(key)) return pending.get(key);
+
+    const promise = fetch(`/api/preview/${encodeURIComponent(fileId)}/${page}`, {
+      cache: 'force-cache'
+    })
+      .then(response => {
+        if (!response.ok) throw new Error(`Prévia da página ${page} indisponível.`);
+        return response.blob();
+      })
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        pageCache.set(key, url);
+        pending.delete(key);
+        return url;
+      })
+      .catch(error => {
+        pending.delete(key);
+        throw error;
+      });
+
+    pending.set(key, promise);
+    return promise;
+  }
+
   function syncImage(img) {
     if (!fileId || !img) return;
 
@@ -38,11 +71,19 @@
     if (!Number.isInteger(page) || page < 1) return;
 
     const targetPage = String(page);
-    const expectedUrl = `/api/preview/${encodeURIComponent(fileId)}/${page}`;
-
-    if (img.dataset.hqPage === targetPage && img.src.includes(expectedUrl)) return;
-
+    const key = `${fileId}:${page}`;
+    const cachedUrl = pageCache.get(key);
     const version = ++requestVersion;
+
+    if (cachedUrl) {
+      img.dataset.hqPage = targetPage;
+      img.dataset.hqLoading = '0';
+      img.onerror = null;
+      if (img.src !== cachedUrl) img.src = cachedUrl;
+      requestAnimationFrame(requestRender);
+      return;
+    }
+
     const currentSrc = img.getAttribute('src') || '';
     if (currentSrc.startsWith('data:image/')) {
       img.dataset.originalSrc = currentSrc;
@@ -52,24 +93,22 @@
     img.dataset.hqPage = targetPage;
     img.dataset.hqLoading = '1';
 
-    img.onerror = () => {
-      if (version !== requestVersion) return;
-      img.dataset.hqLoading = '0';
-      img.onerror = null;
-      if (fallback) {
-        img.src = fallback;
+    getPreviewUrl(page)
+      .then(url => {
+        if (version !== requestVersion || currentPage() !== page) return;
+        img.dataset.hqLoading = '0';
+        img.onerror = null;
+        img.src = url;
         requestAnimationFrame(requestRender);
-      }
-    };
-
-    img.onload = () => {
-      if (version !== requestVersion) return;
-      if (currentPage() !== page) return;
-      img.dataset.hqLoading = '0';
-      requestAnimationFrame(requestRender);
-    };
-
-    img.src = expectedUrl;
+      })
+      .catch(() => {
+        if (version !== requestVersion || currentPage() !== page) return;
+        img.dataset.hqLoading = '0';
+        if (fallback) {
+          img.src = fallback;
+          requestAnimationFrame(requestRender);
+        }
+      });
   }
 
   function scan() {
