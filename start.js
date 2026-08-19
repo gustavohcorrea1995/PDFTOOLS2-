@@ -24,70 +24,105 @@ childProcess.execFile = function patchedExecFile(command, args, options, callbac
 const serverPath = path.join(__dirname, 'server.js');
 let source = fs.readFileSync(serverPath, 'utf8');
 
-// pdftotext -bbox reports coordinates in PDF points from the top-left.
-// The thumbnails are rendered by pdftocairo with -scale-to 1100, meaning
-// each page has its own scale depending on its actual width/height.
-// The old code used one fixed 1100/612 scale for every page, which caused
-// the editor's text boxes to drift away from the real text.
+/*
+ * EDITOR TEXT GEOMETRY
+ *
+ * Do not rely on the order of xMin/yMin/xMax/yMax attributes emitted by
+ * Poppler. Different Poppler versions can serialize the attributes in a
+ * different order. The old regex assumed one exact order and silently lost
+ * words that did not match it.
+ *
+ * We also use -bbox-layout. It gives us every extracted <word> while keeping
+ * the page boundaries. For selectable PDF text this is the authoritative
+ * text geometry available from Poppler.
+ *
+ * The preview is rendered with pdftocairo -scale-to 1100. Each page gets its
+ * own render scale: 1100 / max(pageWidth, pageHeight). This makes the PDF
+ * coordinates and preview pixels share the same coordinate system before the
+ * browser applies its responsive CSS scale.
+ */
 const replacement = `const textBoxes = [];
     try {
       const bboxPath = path.join(previewDir, 'bbox.html');
-      await run('pdftotext', ['-bbox', '-enc', 'UTF-8', input, bboxPath], { timeout: 120000 });
+      await run('pdftotext', ['-bbox-layout', '-enc', 'UTF-8', input, bboxPath], { timeout: 120000 });
       const html = await fs.promises.readFile(bboxPath, 'utf8');
-      const pages = [...html.matchAll(/<page[^>]*>([\\s\\S]*?)<\\/page>/gi)];
+      const pages = [...html.matchAll(/<page\\b[^>]*>([\\s\\S]*?)<\\/page>/gi)];
+
+      const decodeText = (value) => String(value || '')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '\"')
+        .replace(/&#39;/g, "'")
+        .replace(/\\s+/g, ' ')
+        .trim();
+
+      const attr = (attrs, name) => {
+        const match = String(attrs || '').match(new RegExp('\\\\b' + name + '\\\\s*=\\\\s*[\\\"\\\\\']([^\\\"\\\\\']+)[\\\"\\\\\']', 'i'));
+        return match ? Number(match[1]) : NaN;
+      };
 
       pages.forEach((match, pageIndex) => {
         const pageSize = pageSizes[pageIndex] || { width: 612, height: 792 };
         const renderScale = 1100 / Math.max(pageSize.width, pageSize.height);
+        const pageMarkup = match[1];
 
-        const words = [...match[1].matchAll(
-          /<word[^>]*xMin="([0-9.]+)"[^>]*yMin="([0-9.]+)"[^>]*xMax="([0-9.]+)"[^>]*yMax="([0-9.]+)"[^>]*>([\\s\\S]*?)<\\/word>/gi
-        )];
+        const wordMatches = [...pageMarkup.matchAll(/<word\\b([^>]*)>([\\s\\S]*?)<\\/word>/gi)];
+        let wordIndex = 0;
 
-        words.forEach((w, wordIndex) => {
-          const text = w[5].replace(/<[^>]+>/g, '').trim();
+        wordMatches.forEach((wordMatch) => {
+          const attrs = wordMatch[1];
+          const text = decodeText(wordMatch[2]);
           if (!text) return;
 
-          const pdfX = parseFloat(w[1]);
-          const pdfY = parseFloat(w[2]);
-          const pdfWidth = Math.max(1, parseFloat(w[3]) - pdfX);
-          const pdfHeight = Math.max(1, parseFloat(w[4]) - pdfY);
+          const pdfX = attr(attrs, 'xMin');
+          const pdfY = attr(attrs, 'yMin');
+          const pdfXMax = attr(attrs, 'xMax');
+          const pdfYMax = attr(attrs, 'yMax');
+
+          if (![pdfX, pdfY, pdfXMax, pdfYMax].every(Number.isFinite)) return;
+          if (pdfXMax <= pdfX || pdfYMax <= pdfY) return;
+
+          const pdfWidth = Math.max(0.5, pdfXMax - pdfX);
+          const pdfHeight = Math.max(0.5, pdfYMax - pdfY);
+          wordIndex += 1;
 
           textBoxes.push({
-            id: \`p\${pageIndex + 1}-w\${wordIndex + 1}\`,
+            id: \`p\${pageIndex + 1}-w\${wordIndex}\`,
             page: pageIndex + 1,
-            // These four display coordinates are now in the same pixel
-            // coordinate system as the generated thumbnail.
+            // Preview-space coordinates.
             x: pdfX * renderScale,
             y: pdfY * renderScale,
             width: pdfWidth * renderScale,
             height: pdfHeight * renderScale,
-            // Preserve PDF-space coordinates for the actual edit operation.
+            // Original PDF coordinates used when saving the edit.
             pdfX,
             pdfY,
             pdfWidth,
             pdfHeight,
-            fontSize: Math.max(6, pdfHeight * renderScale),
+            text,
+            fontSize: Math.max(4, pdfHeight * renderScale),
             pageWidthPx: pageSize.width * renderScale,
             pageHeightPx: pageSize.height * renderScale,
             renderScale
           });
         });
       });
-    } catch (_) {}
+    } catch (err) {
+      console.error('Falha ao extrair geometria de texto do PDF:', err.message);
+    }
     res.json({ fileId: finalName, pageCount, pageSizes, thumbnails, textBoxes });`;
 
-const pattern = /const textBoxes = \[\];[\\s\\S]*?res\.json\(\{ fileId: finalName, pageCount, pageSizes, thumbnails, textBoxes \}\);/;
+const pattern = /const textBoxes = \\[];[\\s\\S]*?res\\.json\\(\\{ fileId: finalName, pageCount, pageSizes, thumbnails, textBoxes \\}\\);/;
 
 if (pattern.test(source)) {
   source = source.replace(pattern, replacement);
-  console.log('PDFTools startup patch: editor coordinate mapping enabled.');
+  console.log('PDFTools startup patch: precise text geometry enabled.');
 } else {
   console.warn('PDFTools startup patch: inspect block not found; starting original server.');
 }
 
-// Compile the patched server with /app/server.js as its filename so that
-// __dirname and relative imports continue to behave exactly as before.
 const serverModule = new Module(serverPath, module);
 serverModule.filename = serverPath;
 serverModule.paths = Module._nodeModulePaths(__dirname);
