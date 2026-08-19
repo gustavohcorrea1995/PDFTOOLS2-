@@ -1,10 +1,10 @@
-// Mantém a prévia de alta resolução rigorosamente sincronizada com a página atual.
-// Não altera as coordenadas do editor: apenas troca a imagem visual.
+// Prévia HQ do editor sincronizada com a página atual.
+// Não altera o sistema de coordenadas; apenas troca a imagem visual.
 (() => {
   let fileId = null;
   let requestVersion = 0;
 
-  const originalFetch = window.fetch.bind(window);
+  const originalFetch = window.fetch.bind(window.fetch);
   window.fetch = async (...args) => {
     const response = await originalFetch(...args);
     try {
@@ -27,6 +27,13 @@
     return match ? Number(match[1]) : 1;
   }
 
+  function requestRender() {
+    // app.js mantém renderTextLayer dentro de um closure. O listener de
+    // resize já existente é a forma segura de pedir uma nova camada sem
+    // expor nem alterar a implementação do editor.
+    window.dispatchEvent(new Event('resize'));
+  }
+
   function syncImage(img) {
     if (!fileId || !img) return;
 
@@ -36,34 +43,38 @@
     const targetPage = String(page);
     const expectedUrl = `/api/preview/${encodeURIComponent(fileId)}/${page}`;
 
-    // Já estamos mostrando exatamente a página correta em alta resolução.
     if (img.dataset.hqPage === targetPage && img.src.includes(expectedUrl)) return;
 
-    // Cada troca de página invalida qualquer carregamento anterior.
-    // Isso evita que a resposta lenta da página 1 sobrescreva a página 2.
     const version = ++requestVersion;
-    const originalSrc = img.dataset.originalSrc ||
-      (img.src.startsWith('data:image/') ? img.src : '');
 
-    if (originalSrc) img.dataset.originalSrc = originalSrc;
+    // Quando app.js acabou de trocar de página, o src atual é a data URL
+    // daquela página. Atualizamos o fallback para NÃO guardar a página 1.
+    const currentSrc = img.getAttribute('src') || '';
+    if (currentSrc.startsWith('data:image/')) {
+      img.dataset.originalSrc = currentSrc;
+    }
+
+    const fallback = img.dataset.originalSrc || '';
     img.dataset.hqPage = targetPage;
     img.dataset.hqLoading = '1';
 
-    const fallback = originalSrc;
     img.onerror = () => {
       if (version !== requestVersion) return;
       img.dataset.hqLoading = '0';
       img.onerror = null;
-      if (fallback) img.src = fallback;
+      if (fallback) {
+        img.src = fallback;
+        requestAnimationFrame(requestRender);
+      }
     };
 
     img.onload = () => {
       if (version !== requestVersion) return;
+      // Ignora respostas antigas: só a solicitação da página atualmente
+      // selecionada pode atualizar a camada visual.
+      if (currentPage() !== page) return;
       img.dataset.hqLoading = '0';
-      // A imagem agora corresponde à página atual; reposiciona a camada.
-      requestAnimationFrame(() => {
-        if (typeof window.renderTextLayer === 'function') window.renderTextLayer();
-      });
+      requestAnimationFrame(requestRender);
     };
 
     img.src = expectedUrl;
@@ -71,8 +82,7 @@
 
   function scan() {
     const img = getEditorImage();
-    if (!img) return;
-    syncImage(img);
+    if (img) syncImage(img);
   }
 
   const observer = new MutationObserver(scan);
@@ -84,5 +94,5 @@
   });
 
   window.addEventListener('load', scan);
-  setInterval(scan, 150);
+  setInterval(scan, 200);
 })();
