@@ -8,8 +8,7 @@ const originalExecFile = childProcess.execFile;
 childProcess.execFile = function patchedExecFile(command, args, options, callback) {
   if (command === 'pdftocairo' && Array.isArray(args)) {
     const normalized = [...args];
-    const png = normalized.includes('-png');
-    if (png) {
+    if (normalized.includes('-png')) {
       for (let i = normalized.length - 1; i >= 0; i--) {
         if (normalized[i] === '-jpegopt') normalized.splice(i, 2);
       }
@@ -23,88 +22,96 @@ const serverPath = path.join(__dirname, 'server.js');
 let source = fs.readFileSync(serverPath, 'utf8');
 
 /*
- * EDITOR TEXT GEOMETRY
+ * EDITOR TEXT GEOMETRY — MuPDF character quads
  *
- * The previous implementation assumed that Poppler always emitted the
- * xMin/yMin/xMax/yMax attributes in one fixed order. That is not guaranteed,
- * so some words were silently omitted from the editor.
+ * Poppler word bboxes were still not sufficiently reliable for this editor:
+ * the PDF can contain transforms, rotated content and non-trivial crop/media
+ * boxes. The editor already uses MuPDF for the real PDF redaction, so use the
+ * same engine to obtain the selectable text geometry.
  *
- * We now use -bbox-layout and parse every <word> independently, reading the
- * attributes by name. This makes the editor's selectable layer include every
- * text word that Poppler can extract from the PDF, regardless of attribute
- * order or Poppler version.
- *
- * The preview uses pdftocairo -scale-to 1100, so each page has its own exact
- * render scale: 1100 / max(pageWidth, pageHeight). PDF-space coordinates are
- * retained separately for the real edit operation.
+ * MuPDF's structured-text walker exposes a quad for every character. We group
+ * those quads into words. This is much more precise than estimating a word
+ * rectangle from a generic OCR/text bounding box, and it preserves the exact
+ * PDF-space coordinates needed by the redaction/edit operation.
  */
 const replacement = `const textBoxes = [];
     try {
-      const bboxPath = path.join(previewDir, 'bbox.html');
-      await run('pdftotext', ['-bbox-layout', '-enc', 'UTF-8', input, bboxPath], { timeout: 120000 });
-      const html = await fs.promises.readFile(bboxPath, 'utf8');
-      const pages = [...html.matchAll(/<page\\b[^>]*>([\\s\\S]*?)<\\/page>/gi)];
+      const mupdf = await import('mupdf');
+      const document = mupdf.Document.openDocument(bytes, 'application/pdf');
 
-      const decodeText = (value) => String(value || '')
-        .replace(/<[^>]+>/g, '')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&quot;/g, '\"')
-        .replace(/&#39;/g, "'")
-        .replace(/\\s+/g, ' ')
-        .trim();
+      try {
+        for (let pageIndex = 0; pageIndex < document.countPages(); pageIndex++) {
+          const page = document.loadPage(pageIndex);
+          let wordIndex = 0;
+          let word = null;
 
-      const attr = (attrs, name) => {
-        const match = String(attrs || '').match(new RegExp("\\\\b" + name + "\\\\s*=\\\\s*['\\\"]([^'\\\"]+)['\\\"]", 'i'));
-        return match ? Number(match[1]) : NaN;
-      };
+          const finishWord = () => {
+            if (!word || !word.text.trim()) {
+              word = null;
+              return;
+            }
 
-      pages.forEach((match, pageIndex) => {
-        const pageSize = pageSizes[pageIndex] || { width: 612, height: 792 };
-        const renderScale = 1100 / Math.max(pageSize.width, pageSize.height);
-        const pageMarkup = match[1];
-        const wordMatches = [...pageMarkup.matchAll(/<word\\b([^>]*)>([\\s\\S]*?)<\\/word>/gi)];
-        let wordIndex = 0;
+            const pageSize = pageSizes[pageIndex] || { width: 612, height: 792 };
+            const renderScale = 1100 / Math.max(pageSize.width, pageSize.height);
 
-        wordMatches.forEach((wordMatch) => {
-          const attrs = wordMatch[1];
-          const text = decodeText(wordMatch[2]);
-          if (!text) return;
+            textBoxes.push({
+              id: \`p\${pageIndex + 1}-w\${++wordIndex}\`,
+              page: pageIndex + 1,
+              x: word.rect[0] * renderScale,
+              y: word.rect[1] * renderScale,
+              width: Math.max(0.5, word.rect[2] - word.rect[0]) * renderScale,
+              height: Math.max(0.5, word.rect[3] - word.rect[1]) * renderScale,
+              pdfX: word.rect[0],
+              pdfY: word.rect[1],
+              pdfWidth: Math.max(0.5, word.rect[2] - word.rect[0]),
+              pdfHeight: Math.max(0.5, word.rect[3] - word.rect[1]),
+              text: word.text,
+              fontSize: Math.max(4, word.size || (word.rect[3] - word.rect[1])),
+              pageWidthPx: pageSize.width * renderScale,
+              pageHeightPx: pageSize.height * renderScale,
+              renderScale
+            });
+            word = null;
+          };
 
-          const pdfX = attr(attrs, 'xMin');
-          const pdfY = attr(attrs, 'yMin');
-          const pdfXMax = attr(attrs, 'xMax');
-          const pdfYMax = attr(attrs, 'yMax');
+          page.toStructuredText('preserve-whitespace,preserve-spans').walk({
+            onChar(c, _origin, font, size, quad) {
+              // MuPDF quads are already in page coordinates and follow the
+              // same top-left text geometry used by its redaction/search APIs.
+              const rect = [
+                Math.min(quad[0], quad[2], quad[4], quad[6]),
+                Math.min(quad[1], quad[3], quad[5], quad[7]),
+                Math.max(quad[0], quad[2], quad[4], quad[6]),
+                Math.max(quad[1], quad[3], quad[5], quad[7])
+              ];
 
-          if (![pdfX, pdfY, pdfXMax, pdfYMax].every(Number.isFinite)) return;
-          if (pdfXMax <= pdfX || pdfYMax <= pdfY) return;
+              if (!word) {
+                word = { rect, text: '', font, size };
+              } else {
+                word.rect[0] = Math.min(word.rect[0], rect[0]);
+                word.rect[1] = Math.min(word.rect[1], rect[1]);
+                word.rect[2] = Math.max(word.rect[2], rect[2]);
+                word.rect[3] = Math.max(word.rect[3], rect[3]);
+              }
 
-          const pdfWidth = Math.max(0.5, pdfXMax - pdfX);
-          const pdfHeight = Math.max(0.5, pdfYMax - pdfY);
-          wordIndex += 1;
-
-          textBoxes.push({
-            id: \`p\${pageIndex + 1}-w\${wordIndex}\`,
-            page: pageIndex + 1,
-            x: pdfX * renderScale,
-            y: pdfY * renderScale,
-            width: pdfWidth * renderScale,
-            height: pdfHeight * renderScale,
-            pdfX,
-            pdfY,
-            pdfWidth,
-            pdfHeight,
-            text,
-            fontSize: Math.max(4, pdfHeight * renderScale),
-            pageWidthPx: pageSize.width * renderScale,
-            pageHeightPx: pageSize.height * renderScale,
-            renderScale
+              if (c === ' ' || c === '\\t') {
+                finishWord();
+              } else {
+                word.text += c;
+              }
+            },
+            endLine() { finishWord(); },
+            endTextBlock() { finishWord(); }
           });
-        });
-      });
+
+          finishWord();
+          page.destroy();
+        }
+      } finally {
+        document.destroy();
+      }
     } catch (err) {
-      console.error('Falha ao extrair geometria de texto do PDF:', err.message);
+      console.error('Falha ao extrair geometria precisa do texto com MuPDF:', err.message);
     }
     res.json({ fileId: finalName, pageCount, pageSizes, thumbnails, textBoxes });`;
 
@@ -112,7 +119,7 @@ const pattern = /const textBoxes = \\[];[\\s\\S]*?res\\.json\\(\\{ fileId: final
 
 if (pattern.test(source)) {
   source = source.replace(pattern, replacement);
-  console.log('PDFTools startup patch: precise text geometry enabled.');
+  console.log('PDFTools startup patch: MuPDF character-quad text geometry enabled.');
 } else {
   console.warn('PDFTools startup patch: inspect block not found; starting original server.');
 }
