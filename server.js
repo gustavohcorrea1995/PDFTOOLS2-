@@ -403,13 +403,12 @@ app.post('/api/edit/annotate', upload.single('image'), async (req, res) => {
       const x = Number(a.pdfX ?? a.x) || 0, y = Number(a.pdfY ?? a.y) || 0;
       const w = Number(a.pdfWidth ?? a.width) || 20, h = Number(a.pdfHeight ?? a.height) || 12;
       const size = Math.max(4, Math.min(Number(a.fontSize) || h, h));
-      if (a.deleted !== true || String(a.text || '').length) {
-        const redactX = Number(a.redactPdfX ?? x);
-        const redactY = Number(a.redactPdfY ?? y);
-        const redactW = Number(a.redactPdfWidth ?? w);
-        const redactH = Number(a.redactPdfHeight ?? h);
-        page.drawRectangle({ x: Math.max(0, redactX - 0.8), y: Math.max(0, ph - redactY - redactH - 0.8), width: redactW + 1.6, height: redactH + 1.6, color: rgb(1,1,1), borderWidth: 0 });
-      }
+      const redactX = Number(a.redactPdfX ?? x);
+      const redactY = Number(a.redactPdfY ?? y);
+      const redactW = Number(a.redactPdfWidth ?? w);
+      const redactH = Number(a.redactPdfHeight ?? h);
+      // A máscara branca usa exatamente a área dos glifos selecionados, inclusive ao excluir.
+      page.drawRectangle({ x: Math.max(0, redactX - 0.8), y: Math.max(0, ph - redactY - redactH - 0.8), width: redactW + 1.6, height: redactH + 1.6, color: rgb(1,1,1), borderWidth: 0 });
       if (a.deleted !== true && String(a.text || '').length) page.drawText(String(a.text), { x, y: ph - y - size, size, font, color: rgb(0.1,0.1,0.1), maxWidth: Math.max(10, w) });
     }
     const outPath = path.join(TMP, uuid() + '.pdf');
