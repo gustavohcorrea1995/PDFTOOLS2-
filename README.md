@@ -28,7 +28,7 @@ Depois faça um novo deploy.
 
 ## Teste do editor
 
-1. Abra **Adicionar texto/imagem**.
+1. Abra **Editar PDF**.
 2. Envie um PDF.
 3. A página deve aparecer na própria tela — sem ícone de imagem quebrada.
 4. Clique em um telefone, CPF, e-mail etc.
@@ -37,3 +37,5 @@ Depois faça um novo deploy.
 7. Abra o PDF salvo e tente selecionar/copiar o trecho apagado.
 
 O conteúdo selecionado para exclusão é removido por redação permanente antes do PDF final ser gerado.
+
+<!-- deploy trigger: stable PDFTOOLS2 redeploy -->
