@@ -110,63 +110,55 @@
 
   window.addEventListener('resize',()=>{const img=stage.querySelector('img'),wrap=stage.querySelector('.native-page-wrap');if(img&&wrap&&img.complete)renderTextObjects(currentPage,img,wrap);});
 
-  async function savePdfClientSide() {
-    if (!window.PDFLib) throw new Error('Motor PDF não carregou. Atualize a página e tente novamente.');
-    if (!file) throw new Error('Nenhum PDF carregado.');
-    const { PDFDocument, StandardFonts, rgb } = window.PDFLib;
-    const bytes = await file.arrayBuffer();
-    const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
-    const font = await pdf.embedFont(StandardFonts.Helvetica);
-
-    for (const item of textBoxes) {
-      const pageIndex = Number(item.page) - 1;
-      if (pageIndex < 0 || pageIndex >= pdf.getPageCount()) continue;
-      const page = pdf.getPage(pageIndex);
-      const pageHeight = page.getHeight();
-      const x = Number(item.pdfX) || 0;
-      const yTop = Number(item.pdfY) || 0;
-      const w = Math.max(2, Number(item.pdfWidth) || 20);
-      const h = Math.max(2, Number(item.pdfHeight) || 12);
-      const changed = item.changed === true || String(item.text ?? '') !== String(item.originalText ?? '');
-      const isNew = String(item.id || '').startsWith('pnew-');
-
-      if (item.deleted === true || (changed && !isNew)) {
-        page.drawRectangle({
-          x: Math.max(0, x - 0.8),
-          y: Math.max(0, pageHeight - yTop - h - 0.8),
-          width: w + 1.6,
-          height: h + 1.6,
-          color: rgb(1,1,1),
-          borderWidth: 0
-        });
-      }
-
-      if (item.deleted !== true && String(item.text ?? '').length) {
-        const size = Math.max(4, Number(item.fontSize) || h);
-        const c = hexToRgb(item.color || '#111111');
-        page.drawText(String(item.text), {
-          x,
-          y: Math.max(0, pageHeight - yTop - size),
-          size,
-          font,
-          color: rgb(c.r/255,c.g/255,c.b/255),
-          maxWidth: Math.max(10,w),
-          opacity: 1
-        });
-      }
-    }
-
-    return await pdf.save({ useObjectStreams: false });
-  }
-
   saveBtn.addEventListener('click',async()=>{
-    if(!file)return;
+    if(!fileId)return;
     try{
       saveBtn.disabled=true;
       saveBtn.textContent='Salvando…';
-      setStatus('Gerando o PDF editado…');
-      const bytes = await savePdfClientSide();
-      const blob = new Blob([bytes], {type:'application/pdf'});
+      setStatus('Aplicando as alterações no PDF original…');
+
+      // IMPORTANTE: só enviamos ao motor de redaction aquilo que realmente mudou.
+      // Os textos intactos ficam completamente fora da operação para preservar
+      // fonte, vetores, imagens, posições e qualidade do PDF original.
+      const annotations = textBoxes
+        .filter(item => {
+          const isNew = String(item.id || '').startsWith('pnew-');
+          const changed = item.changed === true || String(item.text ?? '') !== String(item.originalText ?? '');
+          return isNew || changed || item.deleted === true;
+        })
+        .map(item => ({
+          id:item.id,
+          page:item.page,
+          pdfX:Number(item.pdfX),
+          pdfY:Number(item.pdfY),
+          pdfWidth:Number(item.pdfWidth),
+          pdfHeight:Number(item.pdfHeight),
+          text:String(item.text ?? ''),
+          fontSize:Number(item.fontSize) || Number(item.pdfHeight) || 12,
+          color:item.color || '#111111',
+          bold:item.bold===true,
+          italic:item.italic===true,
+          underline:item.underline===true,
+          deleted:item.deleted===true
+        }));
+
+      if(!annotations.length){
+        setStatus('Nenhuma alteração para salvar.');
+        return;
+      }
+
+      const fd=new FormData();
+      fd.append('fileId',fileId);
+      fd.append('annotations',JSON.stringify(annotations));
+      const response=await fetch('/api/edit/annotate',{method:'POST',body:fd});
+      if(!response.ok){
+        let message='Falha ao salvar o PDF.';
+        try{const data=await response.json();if(data?.error)message=data.error;}catch(_){ }
+        throw new Error(message);
+      }
+
+      const blob=await response.blob();
+      if(!blob.size) throw new Error('O servidor retornou um PDF vazio.');
       const url=URL.createObjectURL(blob);
       const a=document.createElement('a');
       a.href=url;
@@ -174,9 +166,9 @@
       document.body.appendChild(a);
       a.click();
       a.remove();
-      setTimeout(()=>URL.revokeObjectURL(url),1000);
+      setTimeout(()=>URL.revokeObjectURL(url),1500);
       dirty=false;
-      setStatus('PDF salvo com sucesso. O arquivo editado foi baixado.');
+      setStatus('PDF salvo com sucesso. A alteração substituiu somente a área selecionada.');
     }catch(e){
       console.error(e);
       setStatus(`Erro ao salvar: ${e.message || e}`);
