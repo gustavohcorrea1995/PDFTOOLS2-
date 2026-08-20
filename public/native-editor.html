@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>PDFTools2 — Editor PDF Pro</title>
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    body{background:#111820;color:#eef2f7}.native-shell{max-width:1500px;margin:0 auto;padding:22px}.native-top{display:flex;align-items:center;gap:14px;margin-bottom:18px}.native-top h1{margin:0;font-size:24px}.native-badge{font-size:11px;font-weight:800;letter-spacing:.08em;background:#c1442d;color:#fff;padding:5px 9px;border-radius:4px}.native-layout{display:grid;grid-template-columns:260px 1fr 290px;gap:14px;min-height:78vh}.native-panel{background:#1a222c;border:1px solid #36414e;border-radius:10px;padding:14px}.native-panel h3{margin:0 0 12px;font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:#aeb8c5}.native-upload{border:2px dashed #526070;border-radius:8px;padding:24px;text-align:center;cursor:pointer}.native-upload:hover{border-color:#c1442d}.native-upload input{display:none}.native-stage{background:#252e39;border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:auto;padding:30px}.native-empty{text-align:center;color:#aab4c0}.native-toolbar{display:grid;grid-template-columns:1fr 1fr;gap:7px}.native-toolbar button{border:1px solid #4a5664;background:#27313d;color:#fff;padding:10px 8px;border-radius:6px;cursor:pointer}.native-toolbar button:hover{background:#344150}.native-toolbar button.active{background:#c1442d;border-color:#df654c}.native-status{font-size:12px;color:#aeb8c5;margin-top:14px;line-height:1.5}.native-save{width:100%;margin-top:12px;padding:11px;border:0;border-radius:6px;background:#c1442d;color:#fff;font-weight:800;cursor:pointer}.native-save:disabled{opacity:.45;cursor:not-allowed}.native-properties label{display:block;font-size:11px;color:#aeb8c5;margin-top:10px}.native-properties input,.native-properties select{width:100%;box-sizing:border-box;margin-top:4px;padding:8px;background:#111820;color:#fff;border:1px solid #465362;border-radius:5px}.native-note{font-size:11px;line-height:1.5;color:#99a5b3}.native-back{color:#fff;text-decoration:none}.native-page{max-width:100%;box-shadow:0 12px 40px rgba(0,0,0,.35)}
+    @media(max-width:1050px){.native-layout{grid-template-columns:1fr}.native-stage{min-height:55vh}}
+  </style>
+</head>
+<body>
+  <main class="native-shell">
+    <div class="native-top"><a class="native-back" href="/">← Voltar</a><span class="native-badge">NOVO MOTOR</span><h1>Editor PDF Pro</h1></div>
+    <div class="native-layout">
+      <aside class="native-panel">
+        <h3>Arquivo</h3>
+        <label class="native-upload">📄<br><strong>Escolher PDF</strong><br><small>O editor atual permanece intacto</small><input id="nativeFile" type="file" accept="application/pdf,.pdf"></label>
+        <div class="native-status" id="nativeStatus">Nenhum PDF carregado.</div>
+        <hr style="border-color:#34404c;margin:18px 0">
+        <h3>Ferramentas</h3>
+        <div class="native-toolbar">
+          <button data-mode="select" class="active">↖ Selecionar</button>
+          <button data-mode="text">T Texto</button>
+          <button data-mode="bold">B Negrito</button>
+          <button data-mode="italic">I Itálico</button>
+          <button data-mode="underline">U Sublinhado</button>
+          <button data-mode="delete">⌫ Excluir</button>
+        </div>
+        <button id="nativeSave" class="native-save" disabled>Salvar PDF</button>
+      </aside>
+      <section class="native-stage" id="nativeStage"><div class="native-empty">Carregue um PDF para iniciar o novo motor.</div></section>
+      <aside class="native-panel native-properties">
+        <h3>Propriedades</h3>
+        <div id="nativeProps" class="native-note">Selecione um texto para visualizar suas propriedades.</div>
+      </aside>
+    </div>
+  </main>
+  <script src="/native-editor.js" defer></script>
+</body>
+</html>
