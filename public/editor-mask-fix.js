@@ -2,11 +2,9 @@
   if (window.__pdfToolsEditorMaskFix) return;
   window.__pdfToolsEditorMaskFix = true;
 
-  // O editor precisa mascarar o texto antigo porque a prévia é uma imagem.
-  // A implementação original usava toda a caixa PDF, criando uma faixa
-  // branca muito maior que o texto. Aqui guardamos o texto original e
-  // reduzimos a máscara ao tamanho real aproximado dos caracteres.
   const originals = new Map();
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
 
   function keyFor(el) {
     const s = el.style;
@@ -17,62 +15,66 @@
     ].join('|');
   }
 
-  function measureTextWidth(text, box) {
-    const style = getComputedStyle(box);
-    const canvas = measureTextWidth.canvas || (measureTextWidth.canvas = document.createElement('canvas'));
-    const ctx = canvas.getContext('2d');
+  function measure(text, box) {
     if (!ctx) return box.getBoundingClientRect().width;
-
-    ctx.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+    const style = getComputedStyle(box);
+    ctx.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
     const lines = String(text || '').split(/\r?\n/);
-    return Math.max(1, ...lines.map(line => ctx.measureText(line).width));
+    return Math.max(3, ...lines.map(line => ctx.measureText(line).width + 5));
   }
 
   function scan() {
-    const editor = document.querySelector('.pdf-visual-editor');
-    if (!editor) return;
+    document.querySelectorAll('.pdf-visual-editor').forEach(editor => {
+      editor.querySelectorAll('div').forEach(layer => {
+        const children = Array.from(layer.children || []);
+        children.forEach((el, index) => {
+          if (el.classList.contains('pdf-text-editor')) return;
 
-    const layers = editor.querySelectorAll('div');
-    layers.forEach(layer => {
-      const children = Array.from(layer.children || []);
-      if (!children.length) return;
+          const style = getComputedStyle(el);
+          const isTextBox = style.position === 'absolute'
+            && style.pointerEvents === 'auto'
+            && (el.textContent || '').trim().length > 0
+            && !el.classList.contains('pdf-new-text-layer');
 
-      children.forEach((el, index) => {
-        const bg = getComputedStyle(el).backgroundColor;
-        const isMask = getComputedStyle(el).pointerEvents === 'none'
-          && bg === 'rgb(255, 255, 255)'
-          && index + 1 < children.length;
+          if (isTextBox) {
+            const key = keyFor(el);
+            if (!originals.has(key)) originals.set(key, el.textContent);
+            return;
+          }
 
-        if (isMask) {
+          const isMask = style.position === 'absolute'
+            && style.pointerEvents === 'none'
+            && style.backgroundColor === 'rgb(255, 255, 255)'
+            && index + 1 < children.length;
+
+          if (!isMask) return;
+
           const box = children[index + 1];
-          const original = originals.get(keyFor(el));
-          if (!original) return;
+          if (!box || !box.textContent || box.classList.contains('pdf-text-editor')) return;
 
-          const width = Math.min(
-            el.getBoundingClientRect().width,
-            Math.max(12, measureTextWidth(original, box) + 8)
-          );
-          el.style.width = `${width}px`;
-          el.style.background = '#fff';
-        } else if (
-          el.style.position === 'absolute' &&
-          getComputedStyle(el).pointerEvents === 'auto' &&
-          (el.textContent || '').trim()
-        ) {
-          const key = keyFor(el);
-          if (!originals.has(key)) originals.set(key, el.textContent);
-        }
+          const original = originals.get(keyFor(el));
+          const source = original || box.textContent;
+          const maxWidth = el.getBoundingClientRect().width;
+          const targetWidth = Math.min(maxWidth, measure(source, box));
+
+          el.style.width = `${Math.max(3, targetWidth)}px`;
+          el.dataset.maskFixed = '1';
+        });
       });
     });
   }
 
   const observer = new MutationObserver(() => requestAnimationFrame(scan));
-  const start = () => {
-    const workspace = document.getElementById('workspace') || document.body;
-    observer.observe(workspace, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
-    scan();
-  };
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
-  else start();
+  function start() {
+    const workspace = document.getElementById('workspace') || document.body;
+    observer.observe(workspace, { childList: true, subtree: true });
+    scan();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else {
+    start();
+  }
 })();
