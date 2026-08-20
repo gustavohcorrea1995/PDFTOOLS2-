@@ -23,21 +23,11 @@ let source = fs.readFileSync(serverPath, 'utf8');
 
 /*
  * EDITOR TEXT GEOMETRY — MuPDF character quads + real page bounds
- *
- * Use the same PDF engine already used by the editor for redaction. MuPDF's
- * structured-text walker exposes a quad for every character. We group those
- * quads into words, preserving the exact PDF-space rectangle.
- *
- * Crucially, the coordinates are normalized against page.getBounds(), not
- * against pdf-lib's page size. This handles non-zero CropBox/MediaBox origins
- * and rotated/custom pages without introducing the large offsets visible in
- * the previous editor version.
  */
 const replacement = `const textBoxes = [];
     try {
       const mupdf = await import('mupdf');
       const document = mupdf.Document.openDocument(bytes, 'application/pdf');
-
       try {
         for (let pageIndex = 0; pageIndex < document.countPages(); pageIndex++) {
           const page = document.loadPage(pageIndex);
@@ -47,105 +37,50 @@ const replacement = `const textBoxes = [];
           const renderScale = 1100 / Math.max(pageWidth, pageHeight);
           let wordIndex = 0;
           let word = null;
-
           const finishWord = () => {
-            if (!word || !word.text.trim()) {
-              word = null;
-              return;
-            }
-
+            if (!word || !word.text.trim()) { word = null; return; }
             const x = word.rect[0] - bounds[0];
             const y = word.rect[1] - bounds[1];
             const width = Math.max(0.5, word.rect[2] - word.rect[0]);
             const height = Math.max(0.5, word.rect[3] - word.rect[1]);
-
-            textBoxes.push({
-              id: \`p\${pageIndex + 1}-w\${++wordIndex}\`,
-              page: pageIndex + 1,
-              x: x * renderScale,
-              y: y * renderScale,
-              width: width * renderScale,
-              height: height * renderScale,
-              pdfX: word.rect[0],
-              pdfY: word.rect[1],
-              pdfWidth: width,
-              pdfHeight: height,
-              text: word.text,
-              fontSize: Math.max(4, word.size || height),
-              pageWidthPx: pageWidth * renderScale,
-              pageHeightPx: pageHeight * renderScale,
-              renderScale
-            });
+            textBoxes.push({ id: \`p\${pageIndex + 1}-w\${++wordIndex}\`, page: pageIndex + 1,
+              x: x * renderScale, y: y * renderScale, width: width * renderScale, height: height * renderScale,
+              pdfX: word.rect[0], pdfY: word.rect[1], pdfWidth: width, pdfHeight: height,
+              text: word.text, fontSize: Math.max(4, word.size || height),
+              pageWidthPx: pageWidth * renderScale, pageHeightPx: pageHeight * renderScale, renderScale });
             word = null;
           };
-
           page.toStructuredText('preserve-whitespace,preserve-spans').walk({
             onChar(c, _origin, font, size, quad) {
-              const rect = [
-                Math.min(quad[0], quad[2], quad[4], quad[6]),
-                Math.min(quad[1], quad[3], quad[5], quad[7]),
-                Math.max(quad[0], quad[2], quad[4], quad[6]),
-                Math.max(quad[1], quad[3], quad[5], quad[7])
-              ];
-
-              if (!word) {
-                word = { rect, text: '', font, size };
-              } else {
-                word.rect[0] = Math.min(word.rect[0], rect[0]);
-                word.rect[1] = Math.min(word.rect[1], rect[1]);
-                word.rect[2] = Math.max(word.rect[2], rect[2]);
-                word.rect[3] = Math.max(word.rect[3], rect[3]);
-              }
-
-              if (c === ' ' || c === '\\t') finishWord();
-              else word.text += c;
+              const rect = [Math.min(quad[0], quad[2], quad[4], quad[6]), Math.min(quad[1], quad[3], quad[5], quad[7]),
+                Math.max(quad[0], quad[2], quad[4], quad[6]), Math.max(quad[1], quad[3], quad[5], quad[7])];
+              if (!word) word = { rect, text: '', font, size };
+              else { word.rect[0]=Math.min(word.rect[0],rect[0]); word.rect[1]=Math.min(word.rect[1],rect[1]); word.rect[2]=Math.max(word.rect[2],rect[2]); word.rect[3]=Math.max(word.rect[3],rect[3]); }
+              if (c === ' ' || c === '\\t') finishWord(); else word.text += c;
             },
-            endLine() { finishWord(); },
-            endTextBlock() { finishWord(); }
+            endLine() { finishWord(); }, endTextBlock() { finishWord(); }
           });
-
-          finishWord();
-          page.destroy();
+          finishWord(); page.destroy();
         }
-      } finally {
-        document.destroy();
-      }
-    } catch (err) {
-      console.error('Falha ao extrair geometria precisa do texto com MuPDF:', err.message);
-    }
+      } finally { document.destroy(); }
+    } catch (err) { console.error('Falha ao extrair geometria precisa:', err.message); }
     res.json({ fileId: finalName, pageCount, pageSizes, thumbnails, textBoxes });`;
 
 const pattern = /const textBoxes = \\[];[\\s\\S]*?res\\.json\\(\\{ fileId: finalName, pageCount, pageSizes, thumbnails, textBoxes \\}\\);/;
-
-if (pattern.test(source)) {
-  source = source.replace(pattern, replacement);
-  console.log('PDFTools startup patch: MuPDF character quads + page bounds enabled.');
-} else {
-  console.warn('PDFTools startup patch: inspect block not found; starting original server.');
-}
-
-// OCR is isolated from the existing editor. It is registered at startup
-// without changing any editor renderer, coordinate logic, or preview code.
-const ocrRegister = require(path.join(__dirname, 'ocr-route.js'));
-const ocrRegisterMarker = "ocrRegister(serverModule)";
-const ocrInjection = `\n// OCR route registration is injected after server compilation below.\n`;
-
-const originalCompile = serverModule => {
-  serverModule._compile(source, serverPath);
-};
+if (pattern.test(source)) source = source.replace(pattern, replacement);
 
 const serverModule = new Module(serverPath, module);
 serverModule.filename = serverPath;
 serverModule.paths = Module._nodeModulePaths(__dirname);
 
-// Register OCR in the Express app by injecting a tiny registration call before listen.
 const ocrCall = `\nrequire(${JSON.stringify(path.join(__dirname, 'ocr-route.js'))})(app, { upload, UP, TMP, run, cleanup });\n`;
+const pdfBoxCall = `\nrequire(${JSON.stringify(path.join(__dirname, 'pdfbox-route.js'))})(app, { UP, TMP });\n`;
 const listenMarker = '\napp.listen(PORT, () => console.log(`PDFTools rodando na porta ${PORT}`));';
 if (source.includes(listenMarker)) {
-  source = source.replace(listenMarker, `${ocrCall}${listenMarker}`);
-  console.log('PDFTools startup patch: isolated OCR route enabled.');
+  source = source.replace(listenMarker, `${ocrCall}${pdfBoxCall}${listenMarker}`);
+  console.log('PDFTools startup patch: OCR + Apache PDFBox native editor routes enabled.');
 } else {
-  console.warn('PDFTools startup patch: listen marker not found; OCR route disabled.');
+  console.warn('PDFTools startup patch: listen marker not found; auxiliary routes disabled.');
 }
 
 serverModule._compile(source, serverPath);
