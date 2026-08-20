@@ -310,8 +310,6 @@ app.post('/api/inspect', upload.single('file'), async (req, res) => {
     await fs.promises.copyFile(input, path.join(UP, finalName));
     previewDir = path.join(TMP, 'thumbs_' + id);
     await fs.promises.mkdir(previewDir, { recursive: true });
-
-    // Uma única chamada ao Poppler para todas as páginas, com tamanho de prévia controlado.
     await run('pdftocairo', ['-jpeg', '-jpegopt', 'quality=76', '-scale-to', '1100', input, path.join(previewDir, 'page')], { timeout: 240000 });
     const files = fs.readdirSync(previewDir).filter(f => /^page-\d+\.jpg$/i.test(f)).sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
     const thumbnails = files.map(f => 'data:image/jpeg;base64,' + fs.readFileSync(path.join(previewDir, f)).toString('base64'));
@@ -380,9 +378,10 @@ app.post('/api/edit/annotate', upload.single('image'), async (req, res) => {
       for (const a of anns) {
         if (!a || !String(a.id || '').startsWith('p')) continue;
         const pageIndex = Number(a.page) - 1;
-        const x = Number(a.pdfX ?? a.x), y = Number(a.pdfY ?? a.y), w = Number(a.pdfWidth ?? a.width), h = Number(a.pdfHeight ?? a.height);
+        const x = Number(a.redactPdfX ?? a.pdfX ?? a.x), y = Number(a.redactPdfY ?? a.pdfY ?? a.y);
+        const w = Number(a.redactPdfWidth ?? a.pdfWidth ?? a.width), h = Number(a.redactPdfHeight ?? a.pdfHeight ?? a.height);
         if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= pdf.countPages() || ![x,y,w,h].every(Number.isFinite) || w <= 0 || h <= 0) continue;
-        const page = pdf.loadPage(pageIndex), bounds = page.getBounds(), pad = 1.5;
+        const page = pdf.loadPage(pageIndex), bounds = page.getBounds(), pad = 0.8;
         const rect = [Math.max(bounds[0], x - pad), Math.max(bounds[1], y - pad), Math.min(bounds[2], x + w + pad), Math.min(bounds[3], y + h + pad)];
         const red = page.createAnnotation('Redact'); red.setRect(rect); red.update(); pagesToRedact.add(pageIndex); page.destroy();
       }
@@ -404,7 +403,13 @@ app.post('/api/edit/annotate', upload.single('image'), async (req, res) => {
       const x = Number(a.pdfX ?? a.x) || 0, y = Number(a.pdfY ?? a.y) || 0;
       const w = Number(a.pdfWidth ?? a.width) || 20, h = Number(a.pdfHeight ?? a.height) || 12;
       const size = Math.max(4, Math.min(Number(a.fontSize) || h, h));
-      page.drawRectangle({ x: Math.max(0, x - 1.5), y: Math.max(0, ph - y - h - 1.5), width: w + 3, height: h + 3, color: rgb(1,1,1), borderWidth: 0 });
+      if (a.deleted !== true || String(a.text || '').length) {
+        const redactX = Number(a.redactPdfX ?? x);
+        const redactY = Number(a.redactPdfY ?? y);
+        const redactW = Number(a.redactPdfWidth ?? w);
+        const redactH = Number(a.redactPdfHeight ?? h);
+        page.drawRectangle({ x: Math.max(0, redactX - 0.8), y: Math.max(0, ph - redactY - redactH - 0.8), width: redactW + 1.6, height: redactH + 1.6, color: rgb(1,1,1), borderWidth: 0 });
+      }
       if (a.deleted !== true && String(a.text || '').length) page.drawText(String(a.text), { x, y: ph - y - size, size, font, color: rgb(0.1,0.1,0.1), maxWidth: Math.max(10, w) });
     }
     const outPath = path.join(TMP, uuid() + '.pdf');
