@@ -39,3 +39,4 @@ Depois faça um novo deploy.
 O conteúdo selecionado para exclusão é removido por redação permanente antes do PDF final ser gerado.
 
 <!-- deploy trigger: stable PDFTOOLS2 redeploy -->
+<!-- stable auto-deploy enabled -->
