@@ -7,13 +7,8 @@
   let lastSrc = '';
   let queued = false;
 
-  function getEditor() {
-    return document.querySelector('.pdf-visual-editor');
-  }
-
-  function getImage() {
-    return getEditor()?.querySelector('img');
-  }
+  function getEditor() { return document.querySelector('.pdf-visual-editor'); }
+  function getImage() { return getEditor()?.querySelector('img'); }
 
   function prepare(img) {
     if (!img || !img.complete || !img.naturalWidth) return false;
@@ -40,7 +35,6 @@
     const r = [], g = [], b = [];
     const stepX = Math.max(1, Math.floor(width / 8));
     const stepY = Math.max(1, Math.floor(height / 6));
-
     for (let x = 0; x < width; x += stepX) {
       for (const y of [0, Math.max(0, height - 1)]) {
         const i = (y * width + x) * 4;
@@ -57,16 +51,13 @@
   }
 
   function distance(a, bg) {
-    const dr = a[0] - bg[0];
-    const dg = a[1] - bg[1];
-    const db = a[2] - bg[2];
+    const dr = a[0] - bg[0], dg = a[1] - bg[1], db = a[2] - bg[2];
     return Math.sqrt(dr * dr + dg * dg + db * db);
   }
 
-  // Encontra somente os pixels realmente desenhados pelo texto dentro da caixa original.
+  // Mede os pixels realmente desenhados pelo texto dentro da caixa original.
   function glyphBounds(img, box) {
     if (!prepare(img)) return null;
-
     const ir = img.getBoundingClientRect();
     const br = box.getBoundingClientRect();
     if (!ir.width || !ir.height || !br.width || !br.height) return null;
@@ -86,17 +77,16 @@
         const i = (y * nw + x) * 4;
         if (data[i + 3] < 20) continue;
         if (distance([data[i], data[i + 1], data[i + 2]], bg) < 24) continue;
-        minX = Math.min(minX, x);
-        minY = Math.min(minY, y);
-        maxX = Math.max(maxX, x);
-        maxY = Math.max(maxY, y);
+        minX = Math.min(minX, x); minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
       }
     }
 
     if (maxX < minX || maxY < minY) return null;
-
     const pad = 1.5;
     return {
+      sourceWidth: nw,
+      sourceHeight: nh,
       x: Math.max(0, minX - pad),
       y: Math.max(0, minY - pad),
       width: Math.min(nw, maxX - minX + 1 + pad * 2),
@@ -106,11 +96,9 @@
 
   function findPair(mask) {
     const box = mask.nextElementSibling;
-    if (box && box !== mask && box.matches('div')) {
-      const style = getComputedStyle(box);
-      if (style.position === 'absolute' && style.pointerEvents === 'auto') return box;
-    }
-    return null;
+    if (!box || !box.matches('div')) return null;
+    const style = getComputedStyle(box);
+    return style.position === 'absolute' && style.pointerEvents === 'auto' ? box : null;
   }
 
   function refineMask(mask, box, img) {
@@ -122,12 +110,25 @@
     const sx = ir.width / img.naturalWidth;
     const sy = ir.height / img.naturalHeight;
     const tr = target.getBoundingClientRect();
+    const gx = glyph.x * tr.width / glyph.sourceWidth;
+    const gy = glyph.y * tr.height / glyph.sourceHeight;
+    const gw = glyph.width * tr.width / glyph.sourceWidth;
+    const gh = glyph.height * tr.height / glyph.sourceHeight;
 
-    mask.style.left = `${(tr.left - ir.left + glyph.x * sx)}px`;
-    mask.style.top = `${(tr.top - ir.top + glyph.y * sy)}px`;
-    mask.style.width = `${Math.max(2, glyph.width * sx)}px`;
-    mask.style.height = `${Math.max(2, glyph.height * sy)}px`;
+    mask.style.left = `${tr.left - ir.left + gx}px`;
+    mask.style.top = `${tr.top - ir.top + gy}px`;
+    mask.style.width = `${Math.max(2, gw)}px`;
+    mask.style.height = `${Math.max(2, gh)}px`;
     mask.dataset.preciseMask = '1';
+  }
+
+  function getMasks(editor) {
+    return Array.from(editor.querySelectorAll('div')).filter(el => {
+      const s = getComputedStyle(el);
+      return s.position === 'absolute' &&
+        s.pointerEvents === 'none' &&
+        s.backgroundColor === 'rgb(255, 255, 255)';
+    });
   }
 
   function scan() {
@@ -135,16 +136,7 @@
     const editor = getEditor();
     const img = getImage();
     if (!editor || !img || !img.complete) return;
-
-    const masks = Array.from(editor.querySelectorAll('div')).filter(el => {
-      const s = getComputedStyle(el);
-      return s.position === 'absolute' &&
-        s.pointerEvents === 'none' &&
-        s.backgroundColor === 'rgb(255, 255, 255)' &&
-        el !== editor;
-    });
-
-    masks.forEach(mask => refineMask(mask, findPair(mask), img));
+    getMasks(editor).forEach(mask => refineMask(mask, findPair(mask), img));
   }
 
   function queue() {
@@ -169,54 +161,50 @@
             const annotations = JSON.parse(raw);
             const editor = getEditor();
             const img = getImage();
-
             if (editor && img) {
               scan();
-              const masks = Array.from(editor.querySelectorAll('div')).filter(el => {
-                const s = getComputedStyle(el);
-                return s.position === 'absolute' &&
-                  s.pointerEvents === 'none' &&
-                  s.backgroundColor === 'rgb(255, 255, 255)';
-              });
+              const masks = getMasks(editor);
 
               annotations.forEach(a => {
                 if (!a || !String(a.id || '').startsWith('p')) return;
-                const x = Number(a.pdfX ?? a.x);
-                const y = Number(a.pdfY ?? a.y);
-                const w = Number(a.pdfWidth ?? a.width);
-                const h = Number(a.pdfHeight ?? a.height);
+                const x = Number(a.pdfX ?? a.x), y = Number(a.pdfY ?? a.y);
+                const w = Number(a.pdfWidth ?? a.width), h = Number(a.pdfHeight ?? a.height);
                 if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return;
 
                 let best = null;
                 let bestScore = Infinity;
                 masks.forEach(mask => {
-                  const box = findPair(mask);
-                  const target = box || mask;
-                  const s = getComputedStyle(target);
-                  if (s.position !== 'absolute') return;
-                  const ir = img.getBoundingClientRect();
+                  const target = findPair(mask) || mask;
                   const tr = target.getBoundingClientRect();
-                  const px = (tr.left - ir.left) / ir.width * img.naturalWidth;
-                  const py = (tr.top - ir.top) / ir.height * img.naturalHeight;
-                  const score = Math.abs(px - parseFloat(target.style.left || 0)) + Math.abs(py - parseFloat(target.style.top || 0));
-                  if (score < bestScore) { bestScore = score; best = { mask, target }; }
+                  const scaleX = tr.width / w;
+                  const scaleY = tr.height / h;
+                  if (!scaleX || !scaleY) return;
+
+                  // Antes da máscara ser refinada, a caixa está exatamente em x/y.
+                  // Depois de refinada, usamos o tamanho da caixa original do objeto.
+                  const ir = img.getBoundingClientRect();
+                  const expectedLeft = (x * scaleX) + ir.left;
+                  const expectedTop = (y * scaleY) + ir.top;
+                  const score = Math.abs(tr.left - expectedLeft) + Math.abs(tr.top - expectedTop);
+                  if (score < bestScore) {
+                    bestScore = score;
+                    best = { mask, target, scaleX, scaleY };
+                  }
                 });
 
-                if (!best) return;
+                if (!best || bestScore > 30) return;
                 const glyph = glyphBounds(img, best.target);
                 if (!glyph) return;
 
-                const tr = best.target.getBoundingClientRect();
-                const ir = img.getBoundingClientRect();
-                const localX = glyph.x * tr.width / best.target.getBoundingClientRect().width;
-                const localY = glyph.y * tr.height / best.target.getBoundingClientRect().height;
-                const localW = glyph.width * tr.width / best.target.getBoundingClientRect().width;
-                const localH = glyph.height * tr.height / best.target.getBoundingClientRect().height;
+                const localX = glyph.x * best.target.getBoundingClientRect().width / glyph.sourceWidth;
+                const localY = glyph.y * best.target.getBoundingClientRect().height / glyph.sourceHeight;
+                const localW = glyph.width * best.target.getBoundingClientRect().width / glyph.sourceWidth;
+                const localH = glyph.height * best.target.getBoundingClientRect().height / glyph.sourceHeight;
 
-                a.redactPdfX = x + localX * w / tr.width;
-                a.redactPdfY = y + localY * h / tr.height;
-                a.redactPdfWidth = localW * w / tr.width;
-                a.redactPdfHeight = localH * h / tr.height;
+                a.redactPdfX = x + localX / best.scaleX;
+                a.redactPdfY = y + localY / best.scaleY;
+                a.redactPdfWidth = localW / best.scaleX;
+                a.redactPdfHeight = localH / best.scaleY;
               });
 
               options.body.set('annotations', JSON.stringify(annotations));
