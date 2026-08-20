@@ -130,6 +130,15 @@
     mask.style.width = `${Math.max(2, gw)}px`;
     mask.style.height = `${Math.max(2, gh)}px`;
     mask.dataset.preciseMask = '1';
+
+    // Quando existe texto substituto, a prévia deve mostrar o resultado final,
+    // não a caixa amarela de seleção.
+    if (box) {
+      box.style.color = '#111';
+      box.style.background = 'transparent';
+      box.style.borderColor = 'transparent';
+      box.style.pointerEvents = 'auto';
+    }
   }
 
   function getMasks(editor) {
@@ -190,7 +199,6 @@
                   const scaleX = originalWidth / w;
                   const scaleY = originalHeight / h;
                   if (!scaleX || !scaleY) return;
-                  const ir = img.getBoundingClientRect();
                   const expectedLeft = x * scaleX;
                   const expectedTop = y * scaleY;
                   const score = Math.abs(originalLeft - expectedLeft) + Math.abs(originalTop - expectedTop);
