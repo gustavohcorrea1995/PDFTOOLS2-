@@ -45,42 +45,61 @@
     img.onload = () => { wrap.style.width=`${img.clientWidth}px`; wrap.style.height=`${img.clientHeight}px`; renderTextObjects(page,img,wrap); };
   }
 
+  function applyBoxVisual(item, box, sx, sy) {
+    const changed = item.changed === true || String(item.text ?? '') !== String(item.originalText ?? '');
+    const rgb = hexToRgb(item.color || '#111111');
+    box.textContent = item.text;
+    box.style.color = changed ? `rgb(${rgb.r},${rgb.g},${rgb.b})` : 'rgba(193,68,45,.78)';
+    box.style.background = changed ? '#fff' : 'rgba(193,68,45,.045)';
+    box.style.borderColor = changed ? 'rgba(193,68,45,.65)' : 'rgba(193,68,45,.38)';
+    box.style.fontSize = `${Math.max(7,Number(item.fontSize||item.pdfHeight)*sy*.95)}px`;
+    box.style.fontWeight = item.bold ? '700' : '400';
+    box.style.fontStyle = item.italic ? 'italic' : 'normal';
+    box.style.textDecoration = item.underline ? 'underline' : 'none';
+    box.dataset.changed = changed ? 'true' : 'false';
+    box.style.boxShadow = changed ? '0 0 0 1px rgba(255,255,255,.9) inset' : 'none';
+  }
+
   function renderTextObjects(page, img, wrap) {
     wrap.querySelectorAll('.native-text-object').forEach(e=>e.remove());
     const size = pageSizes[page-1]; if (!size || !img.clientWidth || !img.clientHeight) return;
     const sx = img.clientWidth / Number(size.width), sy = img.clientHeight / Number(size.height);
     textBoxes.filter(t => Number(t.page)===page && t.deleted!==true).forEach(item => {
       const box=document.createElement('div');
-      box.className='native-text-object'; box.dataset.id=item.id; box.title='Clique para editar este texto'; box.textContent=item.text;
+      box.className='native-text-object'; box.dataset.id=item.id; box.title='Clique para editar este texto';
       const left=Number(item.pdfX)*sx, top=Number(item.pdfY)*sy, width=Math.max(4,Number(item.pdfWidth)*sx), height=Math.max(8,Number(item.pdfHeight)*sy);
-      const changed = item.changed === true || String(item.text ?? '') !== String(item.originalText ?? '');
-      const rgb = hexToRgb(item.color || '#111111');
-      box.style.cssText=`position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${height}px;box-sizing:border-box;z-index:5;cursor:text;padding:0 1px;white-space:nowrap;overflow:visible;line-height:1;font-size:${Math.max(7,Number(item.fontSize||item.pdfHeight)*sy*.95)}px;color:${changed ? `rgb(${rgb.r},${rgb.g},${rgb.b})` : 'rgba(193,68,45,.78)'};background:${changed ? '#fff' : 'rgba(193,68,45,.045)'};border:1px solid ${changed ? 'rgba(193,68,45,.65)' : 'rgba(193,68,45,.38)'};`;
-      if(item.bold) box.style.fontWeight='700'; if(item.italic) box.style.fontStyle='italic'; if(item.underline) box.style.textDecoration='underline';
-      if(changed){ box.dataset.changed='true'; box.style.boxShadow='0 0 0 1px rgba(255,255,255,.85) inset'; }
-      box.addEventListener('click',ev=>{ev.stopPropagation(); if(mode==='delete'){item.deleted=true;dirty=true;selected=null;renderTextObjects(page,img,wrap);setStatus('Texto marcado para exclusão.');return;} selectText(item,box,page,img,wrap);});
+      box.style.cssText=`position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${height}px;box-sizing:border-box;z-index:5;cursor:text;padding:0 1px;white-space:nowrap;overflow:visible;line-height:1;`;
+      applyBoxVisual(item,box,sx,sy);
+      box.addEventListener('click',ev=>{ev.stopPropagation(); if(mode==='delete'){item.deleted=true;dirty=true;selected=null;renderTextObjects(page,img,wrap);setStatus('Texto marcado para exclusão.');return;} selectText(item,box,page,img,wrap,sx,sy);});
       wrap.appendChild(box);
     });
   }
 
-  function selectText(item, box, page, img, wrap) {
+  function selectText(item, box, page, img, wrap, sx, sy) {
     selected=item; document.querySelectorAll('.native-text-object').forEach(el=>el.classList.remove('selected')); box.classList.add('selected');
     props.innerHTML=`<div style="margin-bottom:8px"><strong>Texto selecionado</strong></div><label>Texto</label><textarea id="nativeText" style="width:100%;min-height:90px;box-sizing:border-box;background:#111820;color:#fff;border:1px solid #465362;border-radius:5px;padding:7px;">${esc(item.text)}</textarea><label>Tamanho</label><input id="nativeSize" type="number" min="4" max="96" value="${Math.round(item.fontSize||item.pdfHeight||12)}"><label>Cor</label><input id="nativeColor" type="color" value="${item.color || '#111111'}"><p class="native-note">X: ${Number(item.pdfX).toFixed(2)} · Y: ${Number(item.pdfY).toFixed(2)} · W: ${Number(item.pdfWidth).toFixed(2)} · H: ${Number(item.pdfHeight).toFixed(2)}</p><button id="nativeApply" class="native-save" style="margin-top:8px">Aplicar alteração</button>`;
-    document.getElementById('nativeApply').onclick=()=>{
-      const newText=document.getElementById('nativeText').value;
-      item.text=newText;
-      item.fontSize=Number(document.getElementById('nativeSize').value)||item.fontSize;
-      item.color=document.getElementById('nativeColor').value || '#111111';
-      item.changed = String(newText) !== String(item.originalText ?? '') || item.fontSize !== Number(item.fontSize) || !!item.bold || !!item.italic || !!item.underline;
-      // Mesmo que o texto novo tenha o mesmo conteúdo, a aplicação de estilo deve aparecer na prévia.
-      if (newText !== item.originalText) item.changed = true;
+
+    const textInput=document.getElementById('nativeText');
+    const sizeInput=document.getElementById('nativeSize');
+    const colorInput=document.getElementById('nativeColor');
+    const syncPreview=(message='Alteração visível na prévia.')=>{
+      item.text=textInput.value;
+      item.fontSize=Number(sizeInput.value)||item.fontSize;
+      item.color=colorInput.value || '#111111';
+      item.changed = String(item.text) !== String(item.originalText ?? '') || !!item.bold || !!item.italic || !!item.underline;
       dirty=true;
-      renderTextObjects(page,img,wrap);
-      setStatus('Alteração aplicada na prévia — agora ela fica visível sobre o texto original. Ainda não salva no PDF.');
+      // Atualiza somente a caixa selecionada: o cursor do textarea não é perdido e a alteração aparece na página imediatamente.
+      applyBoxVisual(item,box,sx,sy);
+      setStatus(`${message} Ainda não salva no PDF.`);
     };
-    if(mode==='bold'){item.bold=!item.bold;item.changed=true;dirty=true;renderTextObjects(page,img,wrap);setStatus('Negrito aplicado na prévia.');}
-    if(mode==='italic'){item.italic=!item.italic;item.changed=true;dirty=true;renderTextObjects(page,img,wrap);setStatus('Itálico aplicado na prévia.');}
-    if(mode==='underline'){item.underline=!item.underline;item.changed=true;dirty=true;renderTextObjects(page,img,wrap);setStatus('Sublinhado aplicado na prévia.');}
+    textInput.addEventListener('input',()=>syncPreview('Texto alterado em tempo real na prévia.'));
+    sizeInput.addEventListener('input',()=>syncPreview('Tamanho alterado em tempo real na prévia.'));
+    colorInput.addEventListener('input',()=>syncPreview('Cor alterada em tempo real na prévia.'));
+    document.getElementById('nativeApply').onclick=()=>syncPreview('Alteração aplicada na prévia.');
+
+    if(mode==='bold'){item.bold=!item.bold;item.changed=true;dirty=true;applyBoxVisual(item,box,sx,sy);setStatus('Negrito aplicado na prévia. Ainda não salva no PDF.');}
+    if(mode==='italic'){item.italic=!item.italic;item.changed=true;dirty=true;applyBoxVisual(item,box,sx,sy);setStatus('Itálico aplicado na prévia. Ainda não salva no PDF.');}
+    if(mode==='underline'){item.underline=!item.underline;item.changed=true;dirty=true;applyBoxVisual(item,box,sx,sy);setStatus('Sublinhado aplicado na prévia. Ainda não salva no PDF.');}
   }
 
   stage.addEventListener('click',ev=>{
