@@ -55,7 +55,6 @@
     return Math.sqrt(dr * dr + dg * dg + db * db);
   }
 
-  // Mede os pixels realmente desenhados pelo texto dentro da caixa original.
   function glyphBounds(img, box) {
     if (!prepare(img)) return null;
     const ir = img.getBoundingClientRect();
@@ -101,7 +100,18 @@
     return style.position === 'absolute' && style.pointerEvents === 'auto' ? box : null;
   }
 
+  function rememberOriginal(mask) {
+    if (mask.dataset.preciseOriginal === '1') return;
+    const s = mask.style;
+    mask.dataset.originalLeft = String(parseFloat(s.left || 0));
+    mask.dataset.originalTop = String(parseFloat(s.top || 0));
+    mask.dataset.originalWidth = String(parseFloat(s.width || 0));
+    mask.dataset.originalHeight = String(parseFloat(s.height || 0));
+    mask.dataset.preciseOriginal = '1';
+  }
+
   function refineMask(mask, box, img) {
+    rememberOriginal(mask);
     const target = box || mask;
     const glyph = glyphBounds(img, target);
     if (!glyph) return;
@@ -125,9 +135,7 @@
   function getMasks(editor) {
     return Array.from(editor.querySelectorAll('div')).filter(el => {
       const s = getComputedStyle(el);
-      return s.position === 'absolute' &&
-        s.pointerEvents === 'none' &&
-        s.backgroundColor === 'rgb(255, 255, 255)';
+      return s.position === 'absolute' && s.pointerEvents === 'none' && s.backgroundColor === 'rgb(255, 255, 255)';
     });
   }
 
@@ -162,7 +170,6 @@
             const editor = getEditor();
             const img = getImage();
             if (editor && img) {
-              scan();
               const masks = getMasks(editor);
 
               annotations.forEach(a => {
@@ -174,32 +181,31 @@
                 let best = null;
                 let bestScore = Infinity;
                 masks.forEach(mask => {
+                  rememberOriginal(mask);
                   const target = findPair(mask) || mask;
-                  const tr = target.getBoundingClientRect();
-                  const scaleX = tr.width / w;
-                  const scaleY = tr.height / h;
+                  const originalLeft = Number(mask.dataset.originalLeft);
+                  const originalTop = Number(mask.dataset.originalTop);
+                  const originalWidth = Number(mask.dataset.originalWidth);
+                  const originalHeight = Number(mask.dataset.originalHeight);
+                  const scaleX = originalWidth / w;
+                  const scaleY = originalHeight / h;
                   if (!scaleX || !scaleY) return;
-
-                  // Antes da máscara ser refinada, a caixa está exatamente em x/y.
-                  // Depois de refinada, usamos o tamanho da caixa original do objeto.
                   const ir = img.getBoundingClientRect();
-                  const expectedLeft = (x * scaleX) + ir.left;
-                  const expectedTop = (y * scaleY) + ir.top;
-                  const score = Math.abs(tr.left - expectedLeft) + Math.abs(tr.top - expectedTop);
-                  if (score < bestScore) {
-                    bestScore = score;
-                    best = { mask, target, scaleX, scaleY };
-                  }
+                  const expectedLeft = x * scaleX;
+                  const expectedTop = y * scaleY;
+                  const score = Math.abs(originalLeft - expectedLeft) + Math.abs(originalTop - expectedTop);
+                  if (score < bestScore) bestScore = score, best = { mask, target, scaleX, scaleY };
                 });
 
                 if (!best || bestScore > 30) return;
                 const glyph = glyphBounds(img, best.target);
                 if (!glyph) return;
 
-                const localX = glyph.x * best.target.getBoundingClientRect().width / glyph.sourceWidth;
-                const localY = glyph.y * best.target.getBoundingClientRect().height / glyph.sourceHeight;
-                const localW = glyph.width * best.target.getBoundingClientRect().width / glyph.sourceWidth;
-                const localH = glyph.height * best.target.getBoundingClientRect().height / glyph.sourceHeight;
+                const tr = best.target.getBoundingClientRect();
+                const localX = glyph.x * tr.width / glyph.sourceWidth;
+                const localY = glyph.y * tr.height / glyph.sourceHeight;
+                const localW = glyph.width * tr.width / glyph.sourceWidth;
+                const localH = glyph.height * tr.height / glyph.sourceHeight;
 
                 a.redactPdfX = x + localX / best.scaleX;
                 a.redactPdfY = y + localY / best.scaleY;
