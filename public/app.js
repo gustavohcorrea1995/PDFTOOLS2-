@@ -910,3 +910,12 @@ RENDERERS['annotate'] = (root)=>{
   };
 };
 
+
+// Se a navegação veio de outra página (ex: menu lateral do editor nativo),
+// abre a ferramenta certa direto, sem precisar clicar no card de novo.
+// Fica no fim do arquivo de propósito: precisa que RENDERERS já esteja
+// totalmente preenchido antes de chamar openTool().
+(() => {
+  const qsTool = new URLSearchParams(location.search).get('tool');
+  if (qsTool && TOOLS.some(t => t.id === qsTool)) openTool(qsTool);
+})();

@@ -19,6 +19,8 @@
     card.onclick = open;
     grid.appendChild(card);
 
+    if (new URLSearchParams(location.search).get('tool') === 'ocr') open();
+
     function open() {
       hero.classList.add('hidden');
       workspace.classList.remove('hidden');
