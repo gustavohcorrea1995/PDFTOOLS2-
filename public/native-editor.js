@@ -59,7 +59,11 @@
       box.addEventListener('click',ev=>{
         ev.stopPropagation();
         if(item.deleted){
-          item.deleted=false;dirty=true;selected=item;renderTextObjects(page,img,wrap);setStatus('Exclusão desfeita. O texto voltou à prévia e não será removido ao salvar.');selectText(item,wrap.querySelector(`[data-id="${CSS.escape(String(item.id))}\`]),page,img,wrap,sx,sy);return;
+          item.deleted=false;item.changed=false;dirty=true;renderTextObjects(page,img,wrap);
+          const restoredBox=Array.from(wrap.querySelectorAll('.native-text-object')).find(el=>el.dataset.id===String(item.id));
+          selectText(item,restoredBox,page,img,wrap,sx,sy);
+          setStatus('Exclusão desfeita. O texto voltou à prévia e não será removido ao salvar.');
+          return;
         }
         if(mode==='delete'){
           item.deleted=true;item.changed=true;dirty=true;selected=item;renderTextObjects(page,img,wrap);setStatus('Texto marcado para exclusão. A área foi coberta na prévia; o PDF só será alterado ao salvar.');return;
