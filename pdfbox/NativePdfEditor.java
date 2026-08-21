@@ -1,28 +1,41 @@
+import java.awt.image.BufferedImage;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.Base64;
 import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.contentstream.PDFStreamEngine;
 import org.apache.pdfbox.pdmodel.*;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDFont;
+import org.apache.pdfbox.pdmodel.font.PDFontDescriptor;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.pdfbox.pdmodel.graphics.state.RenderingMode;
+import org.apache.pdfbox.rendering.PDFRenderer;
+import org.apache.pdfbox.util.Matrix;
 
 /**
  * Motor de edicao de PDF baseado em Apache PDFBox.
  *
- * Estrategia: em vez de tentar editar os tokens do content stream original
- * (fragil: a segmentacao interna do PDF raramente bate com as "palavras"
- * extraidas para a tela, o que causava trocas erradas e texto bagunçado),
- * este motor:
- *   1. Cobre a area original com um retangulo (redacao visual real).
- *   2. Desenha o texto novo por cima, na mesma posicao/tamanho.
+ * Estrategia: cobrir a area original (redacao visual real) e desenhar o
+ * texto novo por cima, na mesma posicao. Editar os tokens do content
+ * stream original in-place e inerentemente fragil (a segmentacao interna
+ * do PDF raramente bate com a extracao por palavra), entao evitamos isso
+ * por completo.
  *
- * E a mesma estrategia ja usada com sucesso no motor MuPDF (/api/edit/annotate),
- * so que aqui via PDFBox.
+ * Para o resultado ficar visualmente fiel ao original mesmo em edicao em
+ * massa, o motor:
+ *   1. Detecta a fonte realmente usada na posicao de cada edicao (lendo o
+ *      content stream, so para identificacao - nunca para editar tokens).
+ *   2. Reaproveita a fonte original embutida sempre que ela contem os
+ *      glifos necessarios para o texto novo; caso contrario cai para uma
+ *      fonte padrao equivalente (serifada/sem-serifa, negrito/italico).
+ *   3. Amostra a cor de fundo real ao redor da area editada, em vez de
+ *      sempre usar branco.
+ *   4. Agrupa as edicoes por pagina e usa um unico content stream por
+ *      pagina, para escalar bem com muitas edicoes de uma vez.
  */
 public class NativePdfEditor {
 
@@ -56,6 +69,32 @@ public class NativePdfEditor {
         }
     }
 
+    /** Um "run" de texto detectado no content stream original, so para identificar a fonte usada. */
+    static class Run {
+        float x, y, size;
+        PDFont font;
+    }
+
+    /** Le o content stream so para coletar posicao/fonte de cada trecho de texto - nunca edita nada. */
+    static class FontProbe extends PDFStreamEngine {
+        final List<Run> runs = new ArrayList<>();
+
+        @Override
+        protected void showText(byte[] string) throws IOException {
+            PDFont font = getGraphicsState().getTextState().getFont();
+            if (font != null) {
+                Matrix m = getTextMatrix();
+                Run run = new Run();
+                run.x = m.getTranslateX();
+                run.y = m.getTranslateY();
+                run.size = getGraphicsState().getTextState().getFontSize();
+                run.font = font;
+                runs.add(run);
+            }
+            super.showText(string);
+        }
+    }
+
     static List<Edit> readManifest(Path path) throws IOException {
         List<Edit> result = new ArrayList<>();
         for (String line : Files.readAllLines(path, StandardCharsets.UTF_8)) {
@@ -77,7 +116,115 @@ public class NativePdfEditor {
         return result;
     }
 
-    /** Quebra o texto em linhas para caber em maxWidth, usando a largura real da fonte. */
+    /** Acha o "run" de texto original mais proximo da posicao da edicao (so para saber a fonte usada ali). */
+    static Run nearestRun(List<Run> runs, float pageH, Edit e) {
+        float targetY = pageH - (float) e.y - (float) e.h * 0.5f;
+        Run best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (Run run : runs) {
+            double dx = Math.abs(run.x - e.x);
+            double dy = Math.abs(run.y - targetY);
+            double dist = dx + dy * 1.5;
+            if (dist < bestDist) { bestDist = dist; best = run; }
+        }
+        return (best != null && bestDist < 60) ? best : null;
+    }
+
+    static boolean looksBold(PDFont font) {
+        if (font == null) return false;
+        String name = font.getName() == null ? "" : font.getName().toLowerCase();
+        if (name.contains("bold")) return true;
+        try {
+            PDFontDescriptor d = font.getFontDescriptor();
+            if (d != null && d.isForceBold()) return true;
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    static boolean looksItalic(PDFont font) {
+        if (font == null) return false;
+        String name = font.getName() == null ? "" : font.getName().toLowerCase();
+        if (name.contains("italic") || name.contains("oblique")) return true;
+        try {
+            PDFontDescriptor d = font.getFontDescriptor();
+            if (d != null && d.getItalicAngle() != 0) return true;
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    /** Fonte padrao equivalente (serifada/sem-serifa/monoespacada) quando nao da para reaproveitar a original. */
+    static PDFont fallbackFont(String originalName, boolean bold, boolean italic) {
+        String lower = originalName == null ? "" : originalName.toLowerCase();
+        boolean serif = lower.contains("times") || lower.contains("serif") || lower.contains("georgia")
+                || lower.contains("garamond") || lower.contains("cambria") || lower.contains("minion")
+                || lower.contains("book");
+        boolean mono = lower.contains("courier") || lower.contains("mono") || lower.contains("consolas");
+
+        Standard14Fonts.FontName fontName;
+        if (mono) {
+            fontName = bold && italic ? Standard14Fonts.FontName.COURIER_BOLD_OBLIQUE
+                    : bold ? Standard14Fonts.FontName.COURIER_BOLD
+                    : italic ? Standard14Fonts.FontName.COURIER_OBLIQUE
+                    : Standard14Fonts.FontName.COURIER;
+        } else if (serif) {
+            fontName = bold && italic ? Standard14Fonts.FontName.TIMES_BOLD_ITALIC
+                    : bold ? Standard14Fonts.FontName.TIMES_BOLD
+                    : italic ? Standard14Fonts.FontName.TIMES_ITALIC
+                    : Standard14Fonts.FontName.TIMES_ROMAN;
+        } else {
+            fontName = bold && italic ? Standard14Fonts.FontName.HELVETICA_BOLD_OBLIQUE
+                    : bold ? Standard14Fonts.FontName.HELVETICA_BOLD
+                    : italic ? Standard14Fonts.FontName.HELVETICA_OBLIQUE
+                    : Standard14Fonts.FontName.HELVETICA;
+        }
+        return new PDType1Font(fontName);
+    }
+
+    /**
+     * Decide qual fonte usar para o texto novo: tenta reaproveitar a fonte
+     * original detectada (se ela conseguir codificar o texto novo), senao
+     * cai para uma fonte padrao equivalente.
+     */
+    static PDFont resolveFont(Run run, String newText, boolean wantBold, boolean wantItalic) {
+        if (run != null && run.font != null && newText != null && !newText.isEmpty()) {
+            try {
+                run.font.encode(newText);
+                return run.font; // a fonte original tem todos os glifos necessarios - reaproveita
+            } catch (Exception ignored) {
+                // a fonte original (comum em fontes "subset") nao contem os glifos do texto novo
+            }
+        }
+        boolean bold = wantBold || looksBold(run != null ? run.font : null);
+        boolean italic = wantItalic || looksItalic(run != null ? run.font : null);
+        String baseName = run != null && run.font != null ? String.valueOf(run.font.getName()) : "";
+        return fallbackFont(baseName, bold, italic);
+    }
+
+    /** Amostra a cor media ao redor (nao dentro) da caixa, para estimar a cor de fundo real da pagina. */
+    static float[] sampleBackground(BufferedImage raster, float scale, Edit e) {
+        if (raster == null) return null;
+        int margin = 4;
+        int x0 = (int) Math.round(e.x * scale) - margin;
+        int y0 = (int) Math.round(e.y * scale) - margin;
+        int x1 = (int) Math.round((e.x + e.w) * scale) + margin;
+        int y1 = (int) Math.round((e.y + e.h) * scale) + margin;
+        long rs = 0, gs = 0, bs = 0;
+        int n = 0;
+        for (int x = x0; x < x1; x++) {
+            for (int y = y0; y < y1; y++) {
+                boolean onRing = x < x0 + margin || x >= x1 - margin || y < y0 + margin || y >= y1 - margin;
+                if (!onRing) continue;
+                if (x < 0 || y < 0 || x >= raster.getWidth() || y >= raster.getHeight()) continue;
+                int rgb = raster.getRGB(x, y);
+                rs += (rgb >> 16) & 0xFF; gs += (rgb >> 8) & 0xFF; bs += rgb & 0xFF;
+                n++;
+            }
+        }
+        if (n == 0) return null;
+        return new float[]{ rs / (float) n / 255f, gs / (float) n / 255f, bs / (float) n / 255f };
+    }
+
+    /** Quebra o texto em linhas para caber em maxWidth, usando a largura real da fonte escolhida. */
     static List<String> wrapText(PDFont font, float size, String text, float maxWidth) throws IOException {
         List<String> lines = new ArrayList<>();
         for (String paragraph : text.split("\n", -1)) {
@@ -97,9 +244,8 @@ public class NativePdfEditor {
         return lines;
     }
 
-    static void applyEdit(PDDocument doc, PDPage page, Edit e) throws IOException {
-        PDRectangle box = page.getCropBox();
-        float pageH = box.getHeight();
+    static void applyEdit(PDPageContentStream cs, float pageH, List<Run> runs,
+                           BufferedImage raster, float rasterScale, Edit e) throws IOException {
         // e.x/e.y/e.w/e.h chegam em espaco "top-down" (origem no topo, como
         // extraido pelo servidor Node/MuPDF). O PDFBox usa origem embaixo a
         // esquerda, entao fazemos o flip vertical aqui.
@@ -110,51 +256,51 @@ public class NativePdfEditor {
         float rectY = rectYTop - (float) e.h - padY;
         float rectWidth = (float) e.w + padX * 2;
 
-        try (PDPageContentStream cs = new PDPageContentStream(
-                doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
+        float[] bg = sampleBackground(raster, rasterScale, e);
+        if (bg != null) cs.setNonStrokingColor(bg[0], bg[1], bg[2]);
+        else cs.setNonStrokingColor(1f, 1f, 1f);
+        cs.addRect(rectX, rectY, rectWidth, rectHeight);
+        cs.fill();
 
-            // 1) Cobre a area original com retangulo branco (redacao visual).
-            cs.setNonStrokingColor(1f, 1f, 1f);
-            cs.addRect(rectX, rectY, rectWidth, rectHeight);
-            cs.fill();
+        if (e.deleted || e.replacement == null || e.replacement.isEmpty()) return;
 
-            if (e.deleted || e.replacement == null || e.replacement.isEmpty()) return;
+        Run run = nearestRun(runs, pageH, e);
+        PDFont font = resolveFont(run, e.replacement, e.bold, e.italic);
+        float size = (float) (e.size > 0 ? e.size : Math.max(6, e.h));
+        float lineHeight = size * 1.15f;
+        float maxWidth = Math.max(10, (float) e.w + 4);
 
-            // 2) Desenha o texto novo por cima, na mesma posicao.
-            PDFont font = new PDType1Font(
-                    e.bold ? Standard14Fonts.FontName.HELVETICA_BOLD : Standard14Fonts.FontName.HELVETICA);
-            float size = (float) (e.size > 0 ? e.size : Math.max(6, e.h));
-            float lineHeight = size * 1.15f;
-            float maxWidth = Math.max(10, (float) e.w + 4);
+        List<String> lines = wrapText(font, size, e.replacement, maxWidth);
+        float baselineY = pageH - (float) e.y - size * 0.85f;
 
-            List<String> lines = wrapText(font, size, e.replacement, maxWidth);
-            float baselineY = pageH - (float) e.y - size * 0.85f;
-
-            cs.setNonStrokingColor(e.r, e.g, e.b);
-            if (e.bold) {
-                cs.setRenderingMode(RenderingMode.FILL_STROKE);
-                cs.setLineWidth(size * 0.02f);
-                cs.setStrokingColor(e.r, e.g, e.b);
-            }
-
-            for (String line : lines) {
-                cs.beginText();
-                cs.setFont(font, size);
-                cs.newLineAtOffset((float) e.x, baselineY);
-                cs.showText(line);
-                cs.endText();
-
-                if (e.underline) {
-                    float underlineY = baselineY - size * 0.12f;
-                    float lineWidth = font.getStringWidth(line) / 1000f * size;
-                    cs.setLineWidth(Math.max(0.6f, size * 0.05f));
-                    cs.moveTo((float) e.x, underlineY);
-                    cs.lineTo((float) e.x + lineWidth, underlineY);
-                    cs.stroke();
-                }
-                baselineY -= lineHeight;
-            }
+        cs.setNonStrokingColor(e.r, e.g, e.b);
+        boolean fontAlreadyBold = font.getName() != null && font.getName().toLowerCase().contains("bold");
+        boolean simulateBold = e.bold && !fontAlreadyBold;
+        if (simulateBold) {
+            cs.setRenderingMode(RenderingMode.FILL_STROKE);
+            cs.setLineWidth(size * 0.02f);
+            cs.setStrokingColor(e.r, e.g, e.b);
         }
+
+        for (String line : lines) {
+            cs.beginText();
+            cs.setFont(font, size);
+            cs.newLineAtOffset((float) e.x, baselineY);
+            cs.showText(line);
+            cs.endText();
+
+            if (e.underline) {
+                float underlineY = baselineY - size * 0.12f;
+                float lineWidth = font.getStringWidth(line) / 1000f * size;
+                cs.setLineWidth(Math.max(0.6f, size * 0.05f));
+                cs.moveTo((float) e.x, underlineY);
+                cs.lineTo((float) e.x + lineWidth, underlineY);
+                cs.stroke();
+            }
+            baselineY -= lineHeight;
+        }
+
+        if (simulateBold) cs.setRenderingMode(RenderingMode.FILL);
     }
 
     public static void main(String[] args) throws Exception {
@@ -169,13 +315,42 @@ public class NativePdfEditor {
         int applied = 0;
 
         try (PDDocument doc = Loader.loadPDF(input.toFile())) {
+            Map<Integer, List<Edit>> byPage = new LinkedHashMap<>();
             for (Edit e : edits) {
-                int idx = e.page - 1;
+                if (e.page >= 1) byPage.computeIfAbsent(e.page, k -> new ArrayList<>()).add(e);
+            }
+
+            PDFRenderer renderer = new PDFRenderer(doc);
+            float rasterDpi = 150f;
+            float rasterScale = rasterDpi / 72f;
+
+            for (Map.Entry<Integer, List<Edit>> entry : byPage.entrySet()) {
+                int idx = entry.getKey() - 1;
                 if (idx < 0 || idx >= doc.getNumberOfPages()) continue;
                 PDPage page = doc.getPage(idx);
-                applyEdit(doc, page, e);
-                applied++;
+                float pageH = page.getCropBox().getHeight();
+
+                // Deteccao de fonte e amostragem de fundo acontecem ANTES de
+                // qualquer modificacao nesta pagina, para refletir o estado
+                // original real (nao o que ja foi coberto por edicoes
+                // anteriores na mesma pagina).
+                FontProbe probe = new FontProbe();
+                try { probe.processPage(page); } catch (Exception ignored) { /* pagina sem texto extraivel */ }
+
+                BufferedImage raster = null;
+                try { raster = renderer.renderImageWithDPI(idx, rasterDpi); } catch (Exception ignored) {}
+
+                // Um unico content stream por pagina, mesmo com muitas
+                // edicoes nela - essencial para edicao em massa eficiente.
+                try (PDPageContentStream cs = new PDPageContentStream(
+                        doc, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
+                    for (Edit e : entry.getValue()) {
+                        applyEdit(cs, pageH, probe.runs, raster, rasterScale, e);
+                        applied++;
+                    }
+                }
             }
+
             doc.save(output.toFile());
         }
         System.out.println("NATIVE_CHANGED=" + applied + " NEW=0");
