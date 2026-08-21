@@ -75,12 +75,16 @@ serverModule.paths = Module._nodeModulePaths(__dirname);
 
 const ocrCall = `\nrequire(${JSON.stringify(path.join(__dirname, 'ocr-route.js'))})(app, { upload, UP, TMP, run, cleanup });\n`;
 const pdfBoxCall = `\nrequire(${JSON.stringify(path.join(__dirname, 'pdfbox-route.js'))})(app, { UP, TMP });\n`;
-const listenMarker = '\napp.listen(PORT, () => console.log(`PDFTools rodando na porta ${PORT}`));';
-if (source.includes(listenMarker)) {
-  source = source.replace(listenMarker, `${ocrCall}${pdfBoxCall}${listenMarker}`);
+
+// Do not depend on whitespace or the exact callback formatting of server.js.
+// The previous exact-string marker was failing on Render, which disabled both
+// auxiliary routes without making the application itself fail to start.
+const listenRegex = /\napp\.listen\s*\(/;
+if (listenRegex.test(source)) {
+  source = source.replace(listenRegex, `${ocrCall}${pdfBoxCall}\napp.listen(`);
   console.log('PDFTools startup patch: OCR + Apache PDFBox native editor routes enabled.');
 } else {
-  console.warn('PDFTools startup patch: listen marker not found; auxiliary routes disabled.');
+  console.error('PDFTools startup patch: app.listen() not found; auxiliary routes disabled.');
 }
 
 serverModule._compile(source, serverPath);
