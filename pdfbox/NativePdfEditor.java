@@ -186,16 +186,22 @@ public class NativePdfEditor {
      * cai para uma fonte padrao equivalente.
      */
     static PDFont resolveFont(Run run, String newText, boolean wantBold, boolean wantItalic) {
-        if (run != null && run.font != null && newText != null && !newText.isEmpty()) {
+        boolean originalBold = looksBold(run != null ? run.font : null);
+        boolean originalItalic = looksItalic(run != null ? run.font : null);
+        // So reaproveita a fonte original se ela ja tiver o estilo pedido -
+        // senao "reaproveitar" silenciosamente ignoraria o negrito/italico
+        // pedido pelo usuario (a fonte original nao muda de estilo sozinha).
+        boolean styleMatches = (!wantBold || originalBold) && (!wantItalic || originalItalic);
+        if (styleMatches && run != null && run.font != null && newText != null && !newText.isEmpty()) {
             try {
                 run.font.encode(newText);
-                return run.font; // a fonte original tem todos os glifos necessarios - reaproveita
+                return run.font; // a fonte original tem os glifos e ja esta no estilo certo - reaproveita
             } catch (Exception ignored) {
                 // a fonte original (comum em fontes "subset") nao contem os glifos do texto novo
             }
         }
-        boolean bold = wantBold || looksBold(run != null ? run.font : null);
-        boolean italic = wantItalic || looksItalic(run != null ? run.font : null);
+        boolean bold = wantBold || originalBold;
+        boolean italic = wantItalic || originalItalic;
         String baseName = run != null && run.font != null ? String.valueOf(run.font.getName()) : "";
         return fallbackFont(baseName, bold, italic);
     }
