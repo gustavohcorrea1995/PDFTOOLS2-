@@ -26,8 +26,8 @@ COPY . .
 
 # Compile the isolated native editor. The existing Node/MuPDF editor is untouched.
 RUN javac -encoding UTF-8 -cp /opt/pdfbox/pdfbox-app-3.0.8.jar -d /opt/pdfbox pdfbox/NativePdfEditor.java \
-  && jar --create --file /opt/pdfbox/pdfbox-engine.jar -C /opt/pdfbox NativePdfEditor.class -C /opt/pdfbox 'NativePdfEditor$Edit.class' \
-  && test -s /opt/pdfbox/pdfbox-engine.jar
+  && cd /opt/pdfbox && jar --create --file pdfbox-engine.jar NativePdfEditor*.class \
+  && test -s pdfbox-engine.jar
 
 RUN mkdir -p uploads tmp
 
