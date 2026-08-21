@@ -34,19 +34,38 @@ public class NativePdfEditor {
         }
     }
     static String decode(PDFont font,byte[] bytes)throws IOException{StringBuilder out=new StringBuilder();try(ByteArrayInputStream in=new ByteArrayInputStream(bytes)){while(in.available()>0){int code=font.readCode(in);String u=font.toUnicode(code);if(u!=null)out.append(u);}}return out.toString();}
+
+    // Coordinates from the inspector are PDF-space coordinates, while the
+    // text engine reports the text baseline. PDFs may also contain tiny
+    // rounding differences between the inspector and the content stream.
+    // Therefore matching must be proximity-based, but the selected occurrence
+    // is ALWAYS the closest occurrence to the selected box.
+    static double distance(Run r,Edit e,PDPage page)throws IOException{
+        double pageH=page.getCropBox().getHeight();
+        double targetY=pageH-e.y-e.h;
+        double dx=0;
+        if(r.x < e.x) dx=e.x-r.x;
+        else if(r.x > e.x+e.w) dx=r.x-(e.x+e.w);
+        double runWidth=0;
+        try{runWidth=r.font==null?0:r.font.getStringWidth(r.text)/1000.0*r.fontSize;}catch(Exception ignored){}
+        if(r.x>=e.x && r.x<=e.x+e.w) dx=0;
+        else if(r.x+runWidth>=e.x && r.x+runWidth<=e.x+e.w) dx=0;
+        double dy=Math.abs(r.y-targetY);
+        return dx + dy*1.35;
+    }
+
     static boolean near(Run r,Edit e,PDPage page)throws IOException{
         if(r==null)return false;
         double pageH=page.getCropBox().getHeight();
         double targetY=pageH-e.y-e.h;
-        double runWidth=0;
-        try{runWidth=r.font==null?0:r.font.getStringWidth(r.text)/1000.0*r.fontSize;}catch(Exception ignored){}
-        // Match the selected object, not merely the same word. The old ±20pt
-        // window was too permissive and could select another occurrence of the
-        // same text elsewhere on the page.
-        double xTol=Math.max(3.0,Math.min(10.0,e.w*0.18));
-        double yTol=Math.max(4.0,Math.min(10.0,e.h*0.75));
-        return e.x>=r.x-xTol && e.x<=r.x+runWidth+xTol && Math.abs(r.y-targetY)<=yTol;
+        double dy=Math.abs(r.y-targetY);
+        double dx=Math.abs(r.x-e.x);
+        // Generous enough for PDFs with different text matrices, but still
+        // local enough that an identical word elsewhere on the page cannot be
+        // selected accidentally.
+        return dy<=24.0 && dx<=45.0;
     }
+
     static byte[] encode(PDFont font,String text)throws IOException{return font.encode(text);}
 
     static Edit findEdit(List<Edit> edits,String text,Run run,PDPage page,Set<Edit> used)throws IOException{
@@ -57,9 +76,9 @@ public class NativePdfEditor {
             if(e.original==null||e.original.isEmpty()||e.original.equals("__NEW__"))continue;
             if(text.indexOf(e.original)<0)continue;
             if(!near(run,e,page))continue;
-            double pageH=page.getCropBox().getHeight();
-            double targetY=pageH-e.y-e.h;
-            double score=Math.abs(run.x-e.x)+Math.abs(run.y-targetY)*2.0;
+            double score=distance(run,e,page);
+            // Prefer an exact text-box intersection. If there are repeated
+            // words, only the closest one to the selected coordinates wins.
             if(score<bestScore){best=e;bestScore=score;}
         }
         return best;
@@ -71,8 +90,6 @@ public class NativePdfEditor {
     static boolean replaceOnPage(PDDocument doc,PDPage page,List<Edit> edits)throws IOException{
         if(edits.isEmpty()||!page.hasContents())return false;
         Collector collector=new Collector();collector.processPage(page);List<Run> runs=collector.runs;int runIndex=0;boolean changed=false;
-        // Critical: each requested edit may be applied only once. This prevents
-        // replacing every occurrence of a repeated word on the page.
         Set<Edit> used=new HashSet<>();
         PDFStreamParser parser=new PDFStreamParser(page);List<Object> tokens=parser.parse();List<Object> out=new ArrayList<>(tokens.size());PDFont currentFont=null;
         for(Object token:tokens){
