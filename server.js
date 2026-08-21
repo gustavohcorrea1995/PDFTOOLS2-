@@ -355,7 +355,7 @@ app.get('/api/preview/:id/:page', async (req, res) => {
     dir = path.join(TMP, uuid());
     await fs.promises.mkdir(dir, { recursive: true });
     const prefix = path.join(dir, 'page');
-    await run('pdftocairo', ['-f', String(page), '-l', String(page), '-singlefile', '-png', '-scale-to', '1600', pdfPath, prefix], { timeout: 120000 });
+    await run('pdftocairo', ['-f', String(page), '-l', String(page), '-singlefile', '-png', '-scale-to', '2200', pdfPath, prefix], { timeout: 120000 });
     const image = prefix + '.png';
     if (!fs.existsSync(image)) return res.status(404).send('Página não encontrada.');
     res.type('png').sendFile(path.resolve(image), () => cleanup(dir));

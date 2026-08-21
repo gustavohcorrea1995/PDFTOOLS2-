@@ -139,7 +139,11 @@
     const img=document.createElement('img');
     img.className='native-page';
     img.alt=`Página ${page}`;
-    img.src=thumbnails[page-1]||`/api/preview/${encodeURIComponent(fileId)}/${page}`;
+    // A área de edição usa o preview PNG de alta resolução (sem perdas),
+    // não a miniatura JPEG comprimida usada só na barra lateral - essa
+    // era a causa da qualidade ruim, especialmente em texto pequeno e
+    // ao usar o zoom.
+    img.src=`/api/preview/${encodeURIComponent(fileId)}/${page}`;
     wrap.appendChild(img);
     stage.appendChild(wrap);
     img.onload=()=>{
