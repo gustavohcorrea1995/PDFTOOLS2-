@@ -18,8 +18,8 @@ import org.apache.pdfbox.pdfwriter.ContentStreamWriter;
 
 public class NativePdfEditor {
     static class Edit {
-        int page; String original, replacement; double x,y,w,h; boolean deleted; int size; String color;
-        Edit(int page,String original,String replacement,double x,double y,double w,double h,boolean deleted,int size,String color){
+        int page; String original, replacement; double x,y,w,h; boolean deleted; double size; String color;
+        Edit(int page,String original,String replacement,double x,double y,double w,double h,boolean deleted,double size,String color){
             this.page=page;this.original=original;this.replacement=replacement;this.x=x;this.y=y;this.w=w;this.h=h;this.deleted=deleted;this.size=size;this.color=color;
         }
     }
@@ -84,9 +84,9 @@ public class NativePdfEditor {
                     String text=all.toString();Run run=runIndex<runs.size()?runs.get(runIndex++):null;Edit hit=findEdit(edits,text,run,page);
                     if(hit!=null&&!strings.isEmpty()){
                         String newText=text.replace(hit.original,hit.deleted?"":hit.replacement);
-                        strings.get(0).setValue(encode(currentFont,newText));for(int k=1;k<strings.size();k++)strings.get(k).setValue(new byte[0]);changed=true;
+                        strings.get(0).setValue(encode(currentFont,newText));for(int k=1;k<strings.size();k++)strings.get(k).setValue(new byte[0]);
+                        changed=true;
                     }
-                    // PDFBox calls showText once per COSString inside TJ; keep the collector aligned.
                     runIndex=Math.min(runs.size(),runIndex+Math.max(0,strings.size()-1));
                 }
             }
@@ -98,14 +98,26 @@ public class NativePdfEditor {
 
     static void addNewText(PDDocument doc,PDPage page,Edit e)throws IOException{
         if(e.deleted||e.replacement==null||e.replacement.isEmpty())return;
-        PDFont font=new org.apache.pdfbox.pdmodel.font.PDType1Font(Standard14Fonts.FontName.HELVETICA);float pageH=page.getCropBox().getHeight();float y=(float)(pageH-e.y-Math.max(8,e.h));int size=e.size>0?e.size:10;
+        PDFont font=new org.apache.pdfbox.pdmodel.font.PDType1Font(Standard14Fonts.FontName.HELVETICA);float pageH=page.getCropBox().getHeight();float y=(float)(pageH-e.y-Math.max(8,e.h));float size=(float)(e.size>0?e.size:10);
         try(org.apache.pdfbox.pdmodel.PDPageContentStream cs=new org.apache.pdfbox.pdmodel.PDPageContentStream(doc,page,org.apache.pdfbox.pdmodel.PDPageContentStream.AppendMode.APPEND,true,true)){
             cs.beginText();cs.setFont(font,size);cs.newLineAtOffset((float)e.x,y);cs.showText(e.replacement);cs.endText();
         }
     }
     static List<Edit> readManifest(Path path)throws IOException{
         List<Edit> result=new ArrayList<>();
-        for(String line:Files.readAllLines(path,StandardCharsets.UTF_8)){if(line.isBlank())continue;String[] p=line.split("\\t",-1);if(p.length<10)continue;int page=Integer.parseInt(p[0]);String original=new String(Base64.getDecoder().decode(p[1]),StandardCharsets.UTF_8);String replacement=new String(Base64.getDecoder().decode(p[2]),StandardCharsets.UTF_8);double x=Double.parseDouble(p[3]),y=Double.parseDouble(p[4]),w=Double.parseDouble(p[5]),h=Double.parseDouble(p[6]);boolean deleted=Boolean.parseBoolean(p[7]);int size=Integer.parseInt(p[8]);String color=p[9];result.add(new Edit(page,original,replacement,x,y,w,h,deleted,size,color));}
+        for(String line:Files.readAllLines(path,StandardCharsets.UTF_8)){
+            if(line.isBlank())continue;
+            String[] p=line.split("\\t",-1);
+            if(p.length<10)continue;
+            int page=Integer.parseInt(p[0]);
+            String original=new String(Base64.getDecoder().decode(p[1]),StandardCharsets.UTF_8);
+            String replacement=new String(Base64.getDecoder().decode(p[2]),StandardCharsets.UTF_8);
+            double x=Double.parseDouble(p[3]),y=Double.parseDouble(p[4]),w=Double.parseDouble(p[5]),h=Double.parseDouble(p[6]);
+            boolean deleted=Boolean.parseBoolean(p[7]);
+            double size=Double.parseDouble(p[8]);
+            String color=p[9];
+            result.add(new Edit(page,original,replacement,x,y,w,h,deleted,size,color));
+        }
         return result;
     }
     public static void main(String[] args)throws Exception{
