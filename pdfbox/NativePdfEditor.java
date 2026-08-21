@@ -18,7 +18,7 @@ import org.apache.pdfbox.pdfwriter.ContentStreamWriter;
 
 public class NativePdfEditor {
     static class Edit {
-        int page; String original, replacement; double x,y,w,h; boolean deleted,bold; double size; String color;
+        int page; String original,replacement; double x,y,w,h; boolean deleted,bold; double size; String color;
         Edit(int page,String original,String replacement,double x,double y,double w,double h,boolean deleted,double size,String color){
             this.page=page;this.original=original;this.replacement=replacement;this.x=x;this.y=y;this.w=w;this.h=h;this.deleted=deleted;this.size=size;
             String[] style=(color==null?"#111111":color).split("\\|",-1);this.color=style[0];this.bold=Arrays.asList(style).contains("B");
@@ -27,41 +27,76 @@ public class NativePdfEditor {
     static class Run { String text; float x,y; PDFont font; float fontSize; Run(String text,float x,float y,PDFont font,float fontSize){this.text=text;this.x=x;this.y=y;this.font=font;this.fontSize=fontSize;} }
     static class Collector extends PDFStreamEngine {
         final List<Run> runs=new ArrayList<>();
-        @Override protected void showText(byte[] string)throws IOException{PDFont font=getGraphicsState().getTextState().getFont();if(font!=null){String text=decode(font,string);Matrix m=getTextMatrix();PDTextState ts=getGraphicsState().getTextState();runs.add(new Run(text,m.getTranslateX(),m.getTranslateY(),font,ts.getFontSize()));}super.showText(string);}
+        @Override protected void showText(byte[] string)throws IOException{
+            PDFont font=getGraphicsState().getTextState().getFont();
+            if(font!=null){String text=decode(font,string);Matrix m=getTextMatrix();PDTextState ts=getGraphicsState().getTextState();runs.add(new Run(text,m.getTranslateX(),m.getTranslateY(),font,ts.getFontSize()));}
+            super.showText(string);
+        }
     }
     static String decode(PDFont font,byte[] bytes)throws IOException{StringBuilder out=new StringBuilder();try(ByteArrayInputStream in=new ByteArrayInputStream(bytes)){while(in.available()>0){int code=font.readCode(in);String u=font.toUnicode(code);if(u!=null)out.append(u);}}return out.toString();}
-    static boolean near(Run r,Edit e,PDPage page)throws IOException{if(r==null)return true;double pageH=page.getCropBox().getHeight(),targetY=pageH-e.y-e.h,runWidth=0;try{runWidth=r.font==null?0:r.font.getStringWidth(r.text)/1000.0*r.fontSize;}catch(Exception ignored){}return e.x>=r.x-20&&e.x<=r.x+runWidth+20&&Math.abs(r.y-targetY)<=Math.max(18,e.h*2.0);}
-    static byte[] encode(PDFont font,String text)throws IOException{return font.encode(text);}
-    static Edit findEdit(List<Edit> edits,String text,Run run,PDPage page)throws IOException{Edit best=null;double scoreBest=Double.MAX_VALUE;for(Edit e:edits){if(e.original==null||e.original.isEmpty()||e.original.equals("__NEW__"))continue;if(text.indexOf(e.original)<0)continue;if(run!=null&&!near(run,e,page))continue;double score=run==null?0:Math.abs(run.x-e.x)+Math.abs((page.getCropBox().getHeight()-run.y)-e.y);if(score<scoreBest){best=e;scoreBest=score;}}return best;}
-
-    static void addBoldTokens(List<Object> out){
-        out.add(COSInteger.get(2));out.add(Operator.getOperator("Tr"));
-        out.add(COSFloat.get(0.45f));out.add(Operator.getOperator("w"));
+    static boolean near(Run r,Edit e,PDPage page)throws IOException{
+        if(r==null)return false;
+        double pageH=page.getCropBox().getHeight();
+        double targetY=pageH-e.y-e.h;
+        double runWidth=0;
+        try{runWidth=r.font==null?0:r.font.getStringWidth(r.text)/1000.0*r.fontSize;}catch(Exception ignored){}
+        // Match the selected object, not merely the same word. The old ±20pt
+        // window was too permissive and could select another occurrence of the
+        // same text elsewhere on the page.
+        double xTol=Math.max(3.0,Math.min(10.0,e.w*0.18));
+        double yTol=Math.max(4.0,Math.min(10.0,e.h*0.75));
+        return e.x>=r.x-xTol && e.x<=r.x+runWidth+xTol && Math.abs(r.y-targetY)<=yTol;
     }
+    static byte[] encode(PDFont font,String text)throws IOException{return font.encode(text);}
+
+    static Edit findEdit(List<Edit> edits,String text,Run run,PDPage page,Set<Edit> used)throws IOException{
+        if(run==null)return null;
+        Edit best=null;double bestScore=Double.MAX_VALUE;
+        for(Edit e:edits){
+            if(used.contains(e))continue;
+            if(e.original==null||e.original.isEmpty()||e.original.equals("__NEW__"))continue;
+            if(text.indexOf(e.original)<0)continue;
+            if(!near(run,e,page))continue;
+            double pageH=page.getCropBox().getHeight();
+            double targetY=pageH-e.y-e.h;
+            double score=Math.abs(run.x-e.x)+Math.abs(run.y-targetY)*2.0;
+            if(score<bestScore){best=e;bestScore=score;}
+        }
+        return best;
+    }
+
+    static void addBoldTokens(List<Object> out){out.add(COSInteger.get(2));out.add(Operator.getOperator("Tr"));out.add(COSFloat.get(0.45f));out.add(Operator.getOperator("w"));}
     static void resetTextStyleTokens(List<Object> out){out.add(COSInteger.get(0));out.add(Operator.getOperator("Tr"));}
 
     static boolean replaceOnPage(PDDocument doc,PDPage page,List<Edit> edits)throws IOException{
         if(edits.isEmpty()||!page.hasContents())return false;
         Collector collector=new Collector();collector.processPage(page);List<Run> runs=collector.runs;int runIndex=0;boolean changed=false;
+        // Critical: each requested edit may be applied only once. This prevents
+        // replacing every occurrence of a repeated word on the page.
+        Set<Edit> used=new HashSet<>();
         PDFStreamParser parser=new PDFStreamParser(page);List<Object> tokens=parser.parse();List<Object> out=new ArrayList<>(tokens.size());PDFont currentFont=null;
         for(Object token:tokens){
             if(token instanceof Operator){
                 Operator op=(Operator)token;String name=op.getName();
                 if("Tf".equals(name)&&out.size()>=2&&out.get(out.size()-2)instanceof COSName)currentFont=page.getResources().getFont((COSName)out.get(out.size()-2));
                 if("Tj".equals(name)&&!out.isEmpty()&&out.get(out.size()-1)instanceof COSString&&currentFont!=null){
-                    COSString s=(COSString)out.get(out.size()-1);String text=decode(currentFont,s.getBytes());Run run=runIndex<runs.size()?runs.get(runIndex++):null;Edit hit=findEdit(edits,text,run,page);
-                    if(hit!=null){String newText=text.replace(hit.original,hit.deleted?"":hit.replacement);s.setValue(encode(currentFont,newText));if(hit.bold&&!hit.deleted)addBoldTokens(out);if(hit.bold&&!hit.deleted){out.add(token);resetTextStyleTokens(out);}else out.add(token);changed=true;continue;}
+                    COSString s=(COSString)out.get(out.size()-1);String text=decode(currentFont,s.getBytes());Run run=runIndex<runs.size()?runs.get(runIndex++):null;Edit hit=findEdit(edits,text,run,page,used);
+                    if(hit!=null){String newText=text.replace(hit.original,hit.deleted?"":hit.replacement);s.setValue(encode(currentFont,newText));if(hit.bold&&!hit.deleted)addBoldTokens(out);out.add(token);if(hit.bold&&!hit.deleted)resetTextStyleTokens(out);used.add(hit);changed=true;continue;}
                 }
                 if("TJ".equals(name)&&!out.isEmpty()&&out.get(out.size()-1)instanceof COSArray&&currentFont!=null){
                     COSArray arr=(COSArray)out.get(out.size()-1);StringBuilder all=new StringBuilder();List<COSString> strings=new ArrayList<>();for(COSBase b:arr)if(b instanceof COSString){COSString cs=(COSString)b;strings.add(cs);all.append(decode(currentFont,cs.getBytes()));}
-                    String text=all.toString();Run run=runIndex<runs.size()?runs.get(runIndex++):null;Edit hit=findEdit(edits,text,run,page);
-                    if(hit!=null&&!strings.isEmpty()){String newText=text.replace(hit.original,hit.deleted?"":hit.replacement);strings.get(0).setValue(encode(currentFont,newText));for(int k=1;k<strings.size();k++)strings.get(k).setValue(new byte[0]);if(hit.bold&&!hit.deleted)addBoldTokens(out);if(hit.bold&&!hit.deleted){out.add(token);resetTextStyleTokens(out);}else out.add(token);runIndex=Math.min(runs.size(),runIndex+Math.max(0,strings.size()-1));changed=true;continue;}
+                    String text=all.toString();Run run=runIndex<runs.size()?runs.get(runIndex++):null;Edit hit=findEdit(edits,text,run,page,used);
+                    if(hit!=null&&!strings.isEmpty()){
+                        String newText=text.replace(hit.original,hit.deleted?"":hit.replacement);strings.get(0).setValue(encode(currentFont,newText));for(int k=1;k<strings.size();k++)strings.get(k).setValue(new byte[0]);if(hit.bold&&!hit.deleted)addBoldTokens(out);out.add(token);if(hit.bold&&!hit.deleted)resetTextStyleTokens(out);used.add(hit);runIndex=Math.min(runs.size(),runIndex+Math.max(0,strings.size()-1));changed=true;continue;
+                    }
                     runIndex=Math.min(runs.size(),runIndex+Math.max(0,strings.size()-1));
                 }
             }
             out.add(token);
         }
-        if(changed){PDStream newContents=new PDStream(doc);try(OutputStream os=newContents.createOutputStream(COSName.FLATE_DECODE)){new ContentStreamWriter(os).writeTokens(out);}page.setContents(newContents);}return changed;
+        if(changed){PDStream newContents=new PDStream(doc);try(OutputStream os=newContents.createOutputStream(COSName.FLATE_DECODE)){new ContentStreamWriter(os).writeTokens(out);}page.setContents(newContents);}
+        if(used.size()!=edits.size())System.out.println("NATIVE_MATCHED="+used.size()+" REQUESTED="+edits.size());
+        return changed;
     }
 
     static void addNewText(PDDocument doc,PDPage page,Edit e)throws IOException{if(e.deleted||e.replacement==null||e.replacement.isEmpty())return;PDFont font=new org.apache.pdfbox.pdmodel.font.PDType1Font(Standard14Fonts.FontName.HELVETICA);float pageH=page.getCropBox().getHeight(),y=(float)(pageH-e.y-Math.max(8,e.h)),size=(float)(e.size>0?e.size:10);try(org.apache.pdfbox.pdmodel.PDPageContentStream cs=new org.apache.pdfbox.pdmodel.PDPageContentStream(doc,page,org.apache.pdfbox.pdmodel.PDPageContentStream.AppendMode.APPEND,true,true)){if(e.bold){cs.setTextRenderingMode(org.apache.pdfbox.pdmodel.graphics.state.RenderingMode.FILL_STROKE);cs.setLineWidth(.45f);}cs.beginText();cs.setFont(font,size);cs.newLineAtOffset((float)e.x,y);cs.showText(e.replacement);cs.endText();}}
