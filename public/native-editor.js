@@ -1,5 +1,8 @@
 (() => {
   const fileInput=document.getElementById('nativeFile'),uploadBox=document.getElementById('nativeUpload'),fileNameBox=document.getElementById('nativeFileName'),stage=document.getElementById('nativeStage'),status=document.getElementById('nativeStatus'),props=document.getElementById('nativeProps'),saveBtn=document.getElementById('nativeSave'),selectAllBtn=document.getElementById('nativeSelectAll'),rotateBtn=document.getElementById('nativeRotate');
+  const fileNameOutInput=document.getElementById('nativeFileNameOut'),saveHint=document.getElementById('nativeSaveHint');
+  const canPickSaveLocation=typeof window.showSaveFilePicker==='function';
+  if(saveHint)saveHint.textContent=canPickSaveLocation?'Seu navegador permite escolher a pasta de destino ao salvar.':'Este navegador salva na pasta padrão de downloads (defina "perguntar onde salvar" nas configurações do navegador para escolher a pasta a cada vez).';
   const pager=document.getElementById('nativePager'),prevBtn=document.getElementById('nativePrevPage'),nextBtn=document.getElementById('nativeNextPage'),pageLabel=document.getElementById('nativePageLabel');
   const zoomInBtn=document.getElementById('nativeZoomIn'),zoomOutBtn=document.getElementById('nativeZoomOut'),zoomResetBtn=document.getElementById('nativeZoomReset'),zoomLabel=document.getElementById('nativeZoomLabel');
   const undoBtn=document.getElementById('nativeUndo'),redoBtn=document.getElementById('nativeRedo');
@@ -69,6 +72,11 @@
       renderPage(1);
       renderThumbs();
       saveBtn.disabled=false;
+      if(fileNameOutInput){
+        const base=file.name.replace(/\.pdf$/i,'').trim()||'documento';
+        fileNameOutInput.value=`${base}-editado`;
+        fileNameOutInput.disabled=false;
+      }
       updatePager();
       setStatus(`${d.pageCount} página(s) carregada(s) · ${textBoxes.length} textos detectados.`);
     }catch(e){setStatus(e.message);}
@@ -307,5 +315,36 @@
 
   window.addEventListener('resize',()=>{const img=stage.querySelector('img'),wrap=stage.querySelector('.native-page-wrap');if(img&&wrap&&img.complete&&zoom===1)renderTextObjects(currentPage,img,wrap);});
 
-  saveBtn.addEventListener('click',async()=>{if(!fileId)return;try{saveBtn.disabled=true;saveBtn.textContent='Salvando…';setStatus('Removendo conteúdo original e desenhando o novo…');const edits=textBoxes.filter(item=>String(item.id||'').startsWith('pnew-')||item.changed===true||String(item.text??'')!==String(item.originalText??'')||item.deleted===true).map(item=>({id:item.id,page:item.page,pdfX:Number(item.pdfX),pdfY:Number(item.pdfY),pdfWidth:Number(item.pdfWidth),pdfHeight:Number(item.pdfHeight),originalText:String(item.originalText??''),text:String(item.text??''),fontSize:Number(item.fontSize)||Number(item.pdfHeight)||12,color:(item.color||'#111111')+(item.bold?'|B':'')+(item.italic?'|I':'')+(item.underline?'|U':''),bold:item.bold===true,italic:item.italic===true,underline:item.underline===true,deleted:item.deleted===true}));if(!edits.length){setStatus('Nenhuma alteração para salvar.');return;}const response=await fetch('/api/edit/native',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fileId,edits})});if(!response.ok){let message='Falha no motor PDFBox.';try{const data=await response.json();if(data?.error)message=data.error;}catch(_){}throw new Error(message);}const blob=await response.blob();if(!blob.size)throw new Error('O motor retornou um PDF vazio.');const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='PDFTools2-editado.pdf';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);dirty=false;setStatus(`PDF salvo — ${edits.length} alteração(ões) aplicada(s) e removida(s) do conteúdo original.`);}catch(e){console.error(e);setStatus(`Erro ao salvar: ${e.message||e}`);}finally{saveBtn.disabled=false;saveBtn.textContent='Salvar PDF';}});
+  function sanitizeFileName(raw){
+    let name=String(raw||'').trim();
+    name=name.replace(/\.pdf$/i,'');
+    name=name.replace(/[\\/:*?"<>|]+/g,'-').replace(/\s+/g,' ').trim();
+    if(!name)name='documento-editado';
+    return `${name}.pdf`;
+  }
+
+  async function deliverPdf(blob,filename){
+    if(canPickSaveLocation){
+      try{
+        const handle=await window.showSaveFilePicker({
+          suggestedName:filename,
+          types:[{description:'Documento PDF',accept:{'application/pdf':['.pdf']}}]
+        });
+        const writable=await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        return 'picker';
+      }catch(err){
+        if(err && err.name==='AbortError')return 'cancelled';
+        console.warn('Falha ao usar o seletor de pasta nativo, caindo para download padrão:',err);
+        // segue para o fallback abaixo
+      }
+    }
+    const url=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1500);
+    return 'download';
+  }
+
+  saveBtn.addEventListener('click',async()=>{if(!fileId)return;try{saveBtn.disabled=true;saveBtn.textContent='Salvando…';setStatus('Removendo conteúdo original e desenhando o novo…');const edits=textBoxes.filter(item=>String(item.id||'').startsWith('pnew-')||item.changed===true||String(item.text??'')!==String(item.originalText??'')||item.deleted===true).map(item=>({id:item.id,page:item.page,pdfX:Number(item.pdfX),pdfY:Number(item.pdfY),pdfWidth:Number(item.pdfWidth),pdfHeight:Number(item.pdfHeight),originalText:String(item.originalText??''),text:String(item.text??''),fontSize:Number(item.fontSize)||Number(item.pdfHeight)||12,color:(item.color||'#111111')+(item.bold?'|B':'')+(item.italic?'|I':'')+(item.underline?'|U':''),bold:item.bold===true,italic:item.italic===true,underline:item.underline===true,deleted:item.deleted===true}));if(!edits.length){setStatus('Nenhuma alteração para salvar.');return;}const response=await fetch('/api/edit/native',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fileId,edits})});if(!response.ok){let message='Falha no motor PDFBox.';try{const data=await response.json();if(data?.error)message=data.error;}catch(_){}throw new Error(message);}const blob=await response.blob();if(!blob.size)throw new Error('O motor retornou um PDF vazio.');const filename=sanitizeFileName(fileNameOutInput?fileNameOutInput.value:'');const result=await deliverPdf(blob,filename);if(result==='cancelled'){setStatus('Salvamento cancelado — suas alterações continuam na prévia, só não foram baixadas.');return;}dirty=false;setStatus(`"${filename}" salvo — ${edits.length} alteração(ões) aplicada(s) e removida(s) do conteúdo original.`);}catch(e){console.error(e);setStatus(`Erro ao salvar: ${e.message||e}`);}finally{saveBtn.disabled=false;saveBtn.textContent='Salvar PDF';}});
 })();

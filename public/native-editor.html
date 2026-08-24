@@ -19,6 +19,7 @@
 .native-stage{background:var(--panel2);border:1px solid var(--line);border-radius:11px;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:28px;min-width:0}.native-empty{text-align:center;color:var(--muted);margin-top:20vh;font-size:14px}.native-page-wrap{position:relative;display:inline-block;line-height:0;flex:0 1 auto;min-width:0;max-width:100%}.native-page{display:block;max-width:100%;height:auto;background:#fff;box-shadow:0 14px 42px rgba(0,0,0,.18)}.native-properties label{display:block;font-size:11px;color:var(--muted);margin-top:10px}.native-properties input,.native-properties select,.native-properties textarea{width:100%;box-sizing:border-box;margin-top:4px;padding:8px;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:5px}.native-note{font-size:11px;line-height:1.5;color:var(--muted)}
 .native-text-object{font-family:Arial,Helvetica,sans-serif;transition:background .1s,border-color .1s,box-shadow .1s;color:transparent!important;background:transparent!important;border:1px solid rgba(190,112,70,.58);border-radius:1px;text-shadow:none!important}.native-text-object:hover{background:rgba(230,166,120,.07)!important;border-color:rgba(193,68,45,.9)!important;box-shadow:0 0 0 1px rgba(193,68,45,.08)}.native-text-object.selected{background:rgba(193,68,45,.10)!important;border:1px solid #e2604a!important;box-shadow:0 0 0 1px rgba(193,68,45,.18)!important}.native-text-object[data-changed="true"]{color:#111820!important;background:#fff!important;border:1px solid rgba(193,68,45,.7)!important;line-height:1!important}.native-text-object[data-changed="true"].selected{background:#fff!important}.native-text-object.search-hit{outline:2px solid #ffd166!important;outline-offset:1px}
 .native-help{margin-top:12px;color:var(--muted);font-size:10px;line-height:1.45}
+.native-savebar{margin-top:14px}.native-savebar label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}.native-savebar-row{display:flex;align-items:center;border:1px solid var(--line);border-radius:7px;background:var(--panel2);overflow:hidden}.native-savebar-row input{flex:1;min-width:0;border:0;background:transparent;color:var(--text);padding:9px 10px;font-size:13px}.native-savebar-row input:disabled{color:var(--muted)}.native-savebar-row input:focus{outline:none}.native-savebar-ext{padding:9px 10px 9px 0;color:var(--muted);font-size:13px}
 @media(max-width:1200px){.native-layout{grid-template-columns:1fr}.native-thumbs-panel{display:flex;flex-direction:row;overflow-x:auto;overflow-y:hidden}.native-thumb{flex:0 0 90px;margin-right:8px;margin-bottom:0}.native-stage{min-height:55vh}.native-panel{min-height:auto}}
 </style>
 </head>
@@ -48,7 +49,15 @@
   <div class="native-undoredo"><button id="nativeUndo" disabled>↺ Desfazer</button><button id="nativeRedo" disabled>↻ Refazer</button></div>
   <button id="nativeRotate" class="native-save" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);margin-top:10px;">⟳ Rotacionar página</button>
   <button id="nativeSelectAll" class="native-save" style="background:var(--panel2);color:var(--text);border:1px solid var(--line);">☑ Selecionar tudo (documento)</button>
+  <div class="native-savebar">
+    <label for="nativeFileNameOut">Nome do arquivo</label>
+    <div class="native-savebar-row">
+      <input id="nativeFileNameOut" type="text" placeholder="documento-editado" disabled>
+      <span class="native-savebar-ext">.pdf</span>
+    </div>
+  </div>
   <button id="nativeSave" class="native-save" disabled>Salvar PDF</button>
+  <div id="nativeSaveHint" class="native-note" style="margin-top:6px"></div>
   <div class="native-help">As caixas indicam exatamente os textos detectados. Clique em uma caixa para editar. Ctrl+clique seleciona vários. Ctrl+Z desfaz. O texto original permanece visível até a alteração ser aplicada.</div>
 </aside>
 
