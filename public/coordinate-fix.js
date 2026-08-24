@@ -1,8 +1,9 @@
 // Mantém as coordenadas da camada de texto alinhadas com as prévias
-// de alta resolução usadas pelo editor (/api/preview com -scale-to 1600).
+// de alta resolução usadas pelo editor (/api/preview com -scale-to 2200
+// - deve bater com o mesmo valor usado no endpoint /api/preview em server.js).
 (() => {
   const originalFetch = window.fetch.bind(window);
-  const maxPreviewDimension = 1600;
+  const maxPreviewDimension = 2200;
 
   window.fetch = async (...args) => {
     const response = await originalFetch(...args);
