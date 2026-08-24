@@ -620,7 +620,7 @@ RENDERERS['annotate'] = (root)=>{
       padding:10px;
       background:#fff;
       color:#111;
-      border:2px solid #e2604a;
+      border:2px solid #c19665;
       border-radius:6px;
       box-shadow:0 8px 25px rgba(0,0,0,.35);
       box-sizing:border-box;
@@ -673,7 +673,7 @@ RENDERERS['annotate'] = (root)=>{
       border:0;
       border-radius:4px;
       cursor:pointer;
-      background:#e2604a;
+      background:#c19665;
       color:#fff;
       font-weight:700;
     `;

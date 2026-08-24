@@ -38,7 +38,7 @@
         <div id="ocrStatus" class="hint">Aguardando PDF.</div>
         <div id="ocrProgress" style="display:none;margin:18px 0;">
           <div style="height:10px;background:#2b3440;border-radius:999px;overflow:hidden;">
-            <div id="ocrBar" style="height:100%;width:15%;background:#e2604a;transition:width .4s ease;"></div>
+            <div id="ocrBar" style="height:100%;width:15%;background:#c19665;transition:width .4s ease;"></div>
           </div>
           <div id="ocrPercent" style="margin-top:7px;font-size:13px;opacity:.8;">Preparando OCR…</div>
         </div>

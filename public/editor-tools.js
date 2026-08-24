@@ -117,7 +117,7 @@
       box.dataset.newTextId = item.id;
       box.textContent = item.text || 'Novo texto';
       box.title = 'Texto adicionado — arraste para mover. Duplo clique para editar.';
-      box.style.cssText = `position:absolute;left:${p.left}px;top:${p.top}px;width:${p.width}px;height:${p.height}px;box-sizing:border-box;pointer-events:auto;cursor:move;z-index:9;color:${item.color || '#111'};background:rgba(255,255,255,.82);border:1px dashed #e2604a;border-radius:2px;font:${item.bold ? '700' : '400'} ${Math.max(4, item.fontSize)}px Arial,sans-serif;line-height:1.05;padding:1px 2px;white-space:pre-wrap;overflow:hidden;`;
+      box.style.cssText = `position:absolute;left:${p.left}px;top:${p.top}px;width:${p.width}px;height:${p.height}px;box-sizing:border-box;pointer-events:auto;cursor:move;z-index:9;color:${item.color || '#111'};background:rgba(255,255,255,.82);border:1px dashed #c19665;border-radius:2px;font:${item.bold ? '700' : '400'} ${Math.max(4, item.fontSize)}px Arial,sans-serif;line-height:1.05;padding:1px 2px;white-space:pre-wrap;overflow:hidden;`;
 
       box.addEventListener('pointerdown', event => {
         event.stopPropagation();
@@ -206,7 +206,7 @@
 
     const panel = document.createElement('div');
     panel.className = 'pdf-new-text-panel';
-    panel.style.cssText = 'position:fixed;z-index:20000;right:24px;top:110px;width:310px;padding:12px;background:#fff;color:#111;border:2px solid #e2604a;border-radius:7px;box-shadow:0 10px 30px rgba(0,0,0,.35);font:14px Arial,sans-serif;';
+    panel.style.cssText = 'position:fixed;z-index:20000;right:24px;top:110px;width:310px;padding:12px;background:#fff;color:#111;border:2px solid #c19665;border-radius:7px;box-shadow:0 10px 30px rgba(0,0,0,.35);font:14px Arial,sans-serif;';
 
     const title = document.createElement('strong');
     title.textContent = 'Adicionar / editar texto';
@@ -241,7 +241,7 @@
     const save = document.createElement('button');
     save.type = 'button';
     save.textContent = 'Salvar';
-    save.style.cssText = 'padding:6px 12px;background:#e2604a;color:#fff;border:0;border-radius:4px;font-weight:700;';
+    save.style.cssText = 'padding:6px 12px;background:#c19665;color:#2a0d12;border:0;border-radius:4px;font-weight:700;';
 
     const remove = document.createElement('button');
     remove.type = 'button';
@@ -313,7 +313,7 @@
     style.textContent = `
       .pdf-editor-sidebar{position:fixed;left:14px;top:190px;width:74px;z-index:15000;display:flex;flex-direction:column;gap:5px;padding:7px;background:#1b222b;border:1px solid #3d4856;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
       .pdf-editor-sidebar button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:52px;padding:5px 3px;border:1px solid #4b5968;background:#27313d;color:#fff;border-radius:5px;cursor:pointer;font-weight:700;font-size:18px}
-      .pdf-editor-sidebar button span{font-size:10px;font-weight:600}.pdf-editor-sidebar button:hover{background:#33404f}.pdf-editor-sidebar button.active{background:#e2604a;border-color:#e06b51}.pdf-editor-sidebar button:disabled{opacity:.4;cursor:not-allowed}.pdf-editor-sidebar .sep{height:1px;background:#566170;margin:2px 0}
+      .pdf-editor-sidebar button span{font-size:10px;font-weight:600}.pdf-editor-sidebar button:hover{background:#33404f}.pdf-editor-sidebar button.active{background:#c19665;border-color:#e06b51}.pdf-editor-sidebar button:disabled{opacity:.4;cursor:not-allowed}.pdf-editor-sidebar .sep{height:1px;background:#566170;margin:2px 0}
       @media(max-width:900px){.pdf-editor-sidebar{position:sticky;left:auto;top:8px;width:auto;flex-direction:row;margin:8px 0;align-items:stretch}.pdf-editor-sidebar button{min-width:70px}}
     `;
 
