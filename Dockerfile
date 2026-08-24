@@ -7,6 +7,9 @@ RUN apt-get update \
      libreoffice \
      fonts-liberation \
      openjdk-17-jdk-headless \
+     tesseract-ocr \
+     tesseract-ocr-por \
+     tesseract-ocr-eng \
      curl \
      ca-certificates \
   && rm -rf /var/lib/apt/lists/*

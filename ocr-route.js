@@ -29,7 +29,6 @@ module.exports = function registerOcrRoutes(app, { upload, UP, TMP, run, cleanup
       if (images.length > 100) throw new Error('O OCR está limitado a 100 páginas por operação.');
 
       const ocrPdfs = [];
-      let detectedText = 0;
 
       for (let i = 0; i < images.length; i++) {
         const imagePath = path.join(workDir, images[i]);
@@ -48,14 +47,6 @@ module.exports = function registerOcrRoutes(app, { upload, UP, TMP, run, cleanup
         }
 
         ocrPdfs.push(ocrPdf);
-
-        const txtBase = path.join(workDir, `text-${String(i + 1).padStart(4, '0')}`);
-        await run('tesseract', [imagePath, txtBase, '-l', 'por+eng'], { timeout: 180000 });
-        const textFile = `${txtBase}.txt`;
-        if (fs.existsSync(textFile)) {
-          const text = await fs.promises.readFile(textFile, 'utf8');
-          detectedText += text.trim().length;
-        }
       }
 
       const output = path.join(TMP, `${uuid()}.pdf`);
@@ -67,7 +58,6 @@ module.exports = function registerOcrRoutes(app, { upload, UP, TMP, run, cleanup
         'Content-Disposition': 'attachment; filename="pdf-editavel-ocr.pdf"',
         'Content-Length': String(stat.size),
         'X-OCR-Pages': String(images.length),
-        'X-OCR-Detected-Text': detectedText > 0 ? 'true' : 'false',
         'Cache-Control': 'no-store, max-age=0'
       });
 

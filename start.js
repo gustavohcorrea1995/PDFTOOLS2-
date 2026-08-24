@@ -79,13 +79,24 @@ serverModule.paths = Module._nodeModulePaths(__dirname);
 
 const ocrCall = `\nrequire(${JSON.stringify(path.join(__dirname, 'ocr-route.js'))})(app, { upload, UP, TMP, run, cleanup });\n`;
 const pdfBoxCall = `\nrequire(${JSON.stringify(path.join(__dirname, 'pdfbox-route.js'))})(app, { UP, TMP });\n`;
+// O server.js original ja registra um error handler generico (JSON limpo),
+// mas ANTES do ponto onde injetamos essas rotas - no Express, middleware de
+// erro so cobre rotas registradas ANTES dele. Sem isso, erros do upload
+// (ex: tipo de arquivo invalido) nessas duas rotas vazavam a pagina de erro
+// padrao do Express, com stack trace e caminhos de arquivo do servidor.
+const errorHandlerCall = `\napp.use((err, req, res, next) => {
+  cleanup(req.file?.path, ...(req.files || []).map(f => f.path));
+  if (err instanceof require('multer').MulterError) return res.status(413).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'Arquivo maior que 200 MB.' : \`Upload inválido: \${err.message}\` });
+  if (err) return res.status(400).json({ error: err.message || 'Erro ao processar a solicitação.' });
+  next();
+});\n`;
 
 // Do not depend on whitespace or the exact callback formatting of server.js.
 // The previous exact-string marker was failing on Render, which disabled both
 // auxiliary routes without making the application itself fail to start.
 const listenRegex = /\napp\.listen\s*\(/;
 if (listenRegex.test(source)) {
-  source = source.replace(listenRegex, `${ocrCall}${pdfBoxCall}\napp.listen(`);
+  source = source.replace(listenRegex, `${ocrCall}${pdfBoxCall}${errorHandlerCall}\napp.listen(`);
   console.log('PDFTools startup patch: OCR + Apache PDFBox native editor routes enabled.');
 } else {
   console.error('PDFTools startup patch: app.listen() not found; auxiliary routes disabled.');
