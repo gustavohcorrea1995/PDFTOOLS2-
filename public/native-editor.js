@@ -323,22 +323,34 @@
     return `${name}.pdf`;
   }
 
-  async function deliverPdf(blob,filename){
-    if(canPickSaveLocation){
-      try{
-        const handle=await window.showSaveFilePicker({
-          suggestedName:filename,
-          types:[{description:'Documento PDF',accept:{'application/pdf':['.pdf']}}]
-        });
-        const writable=await handle.createWritable();
-        await writable.write(blob);
-        await writable.close();
-        return 'picker';
-      }catch(err){
-        if(err && err.name==='AbortError')return 'cancelled';
-        console.warn('Falha ao usar o seletor de pasta nativo, caindo para download padrão:',err);
-        // segue para o fallback abaixo
-      }
+  // IMPORTANTE: o navegador só deixa abrir o diálogo nativo "Salvar como"
+  // como reação DIRETA e IMEDIATA a um clique do usuário. Se a gente
+  // espera o PDF ser processado no servidor antes de chamar isso (o que
+  // pode levar vários segundos), o navegador já não considera mais um
+  // clique "recente" o suficiente e recusa silenciosamente - caindo sem
+  // aviso no download automático. Por isso perguntamos ONDE salvar
+  // primeiro, e só depois processamos o PDF.
+  async function pickSaveHandle(filename){
+    if(!canPickSaveLocation)return{handle:null,cancelled:false};
+    try{
+      const handle=await window.showSaveFilePicker({
+        suggestedName:filename,
+        types:[{description:'Documento PDF',accept:{'application/pdf':['.pdf']}}]
+      });
+      return{handle,cancelled:false};
+    }catch(err){
+      if(err && err.name==='AbortError')return{handle:null,cancelled:true};
+      console.warn('Falha ao abrir o seletor de pasta nativo, vai cair no download padrão ao final:',err);
+      return{handle:null,cancelled:false};
+    }
+  }
+
+  async function deliverPdf(blob,filename,handle){
+    if(handle){
+      const writable=await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return 'picker';
     }
     const url=URL.createObjectURL(blob),a=document.createElement('a');
     a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
@@ -346,5 +358,35 @@
     return 'download';
   }
 
-  saveBtn.addEventListener('click',async()=>{if(!fileId)return;try{saveBtn.disabled=true;saveBtn.textContent='Salvando…';setStatus('Removendo conteúdo original e desenhando o novo…');const edits=textBoxes.filter(item=>String(item.id||'').startsWith('pnew-')||item.changed===true||String(item.text??'')!==String(item.originalText??'')||item.deleted===true).map(item=>({id:item.id,page:item.page,pdfX:Number(item.pdfX),pdfY:Number(item.pdfY),pdfWidth:Number(item.pdfWidth),pdfHeight:Number(item.pdfHeight),originalText:String(item.originalText??''),text:String(item.text??''),fontSize:Number(item.fontSize)||Number(item.pdfHeight)||12,color:(item.color||'#111111')+(item.bold?'|B':'')+(item.italic?'|I':'')+(item.underline?'|U':''),bold:item.bold===true,italic:item.italic===true,underline:item.underline===true,deleted:item.deleted===true}));if(!edits.length){setStatus('Nenhuma alteração para salvar.');return;}const response=await fetch('/api/edit/native',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fileId,edits})});if(!response.ok){let message='Falha no motor PDFBox.';try{const data=await response.json();if(data?.error)message=data.error;}catch(_){}throw new Error(message);}const blob=await response.blob();if(!blob.size)throw new Error('O motor retornou um PDF vazio.');const filename=sanitizeFileName(fileNameOutInput?fileNameOutInput.value:'');const result=await deliverPdf(blob,filename);if(result==='cancelled'){setStatus('Salvamento cancelado — suas alterações continuam na prévia, só não foram baixadas.');return;}dirty=false;setStatus(`"${filename}" salvo — ${edits.length} alteração(ões) aplicada(s) e removida(s) do conteúdo original.`);}catch(e){console.error(e);setStatus(`Erro ao salvar: ${e.message||e}`);}finally{saveBtn.disabled=false;saveBtn.textContent='Salvar PDF';}});
+  saveBtn.addEventListener('click',async()=>{
+    if(!fileId)return;
+    const filename=sanitizeFileName(fileNameOutInput?fileNameOutInput.value:'');
+
+    // Passo 1 (instantâneo, ainda "quente" o clique do usuário): pergunta onde salvar.
+    const{handle,cancelled}=await pickSaveHandle(filename);
+    if(cancelled){setStatus('Salvamento cancelado — suas alterações continuam na prévia.');return;}
+
+    try{
+      saveBtn.disabled=true;saveBtn.textContent='Salvando…';
+      setStatus('Removendo conteúdo original e desenhando o novo… isso pode levar alguns segundos em documentos grandes.');
+      const edits=textBoxes.filter(item=>String(item.id||'').startsWith('pnew-')||item.changed===true||String(item.text??'')!==String(item.originalText??'')||item.deleted===true).map(item=>({id:item.id,page:item.page,pdfX:Number(item.pdfX),pdfY:Number(item.pdfY),pdfWidth:Number(item.pdfWidth),pdfHeight:Number(item.pdfHeight),originalText:String(item.originalText??''),text:String(item.text??''),fontSize:Number(item.fontSize)||Number(item.pdfHeight)||12,color:(item.color||'#111111')+(item.bold?'|B':'')+(item.italic?'|I':'')+(item.underline?'|U':''),bold:item.bold===true,italic:item.italic===true,underline:item.underline===true,deleted:item.deleted===true}));
+      if(!edits.length){setStatus('Nenhuma alteração para salvar.');return;}
+
+      // Passo 2 (pode demorar): processa no servidor.
+      const response=await fetch('/api/edit/native',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fileId,edits})});
+      if(!response.ok){let message='Falha no motor PDFBox.';try{const data=await response.json();if(data?.error)message=data.error;}catch(_){}throw new Error(message);}
+      const blob=await response.blob();
+      if(!blob.size)throw new Error('O motor retornou um PDF vazio.');
+
+      // Passo 3 (instantâneo): grava no local já escolhido no passo 1, ou baixa.
+      const result=await deliverPdf(blob,filename,handle);
+      dirty=false;
+      setStatus(`"${filename}" salvo${result==='picker'?' no local escolhido':''} — ${edits.length} alteração(ões) aplicada(s) e removida(s) do conteúdo original.`);
+    }catch(e){
+      console.error(e);
+      setStatus(`Erro ao salvar: ${e.message||e}`);
+    }finally{
+      saveBtn.disabled=false;saveBtn.textContent='Salvar PDF';
+    }
+  });
 })();
