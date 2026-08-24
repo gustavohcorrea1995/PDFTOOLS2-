@@ -37,13 +37,22 @@
         </div>
         <div id="ocrStatus" class="hint">Aguardando PDF.</div>
         <div id="ocrProgress" style="display:none;margin:18px 0;">
-          <div style="height:10px;background:#2b3440;border-radius:999px;overflow:hidden;">
-            <div id="ocrBar" style="height:100%;width:15%;background:#c19665;transition:width .4s ease;"></div>
+          <div style="height:10px;background:#2b3440;border-radius:999px;overflow:hidden;position:relative;">
+            <div id="ocrBar" style="height:100%;width:100%;background:linear-gradient(90deg,#c19665,#d4ac82);position:relative;overflow:hidden;">
+              <div id="ocrBarShine" style="position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);transform:translateX(-100%);animation:ocrShine 1.3s linear infinite;"></div>
+            </div>
           </div>
-          <div id="ocrPercent" style="margin-top:7px;font-size:13px;opacity:.8;">Preparando OCR…</div>
+          <div id="ocrPercent" style="margin-top:7px;font-size:13px;opacity:.85;">Preparando OCR…</div>
         </div>
       `;
       body.appendChild(wrap);
+
+      if (!document.getElementById('ocrShineStyle')) {
+        const style = document.createElement('style');
+        style.id = 'ocrShineStyle';
+        style.textContent = '@keyframes ocrShine{to{transform:translateX(100%)}}';
+        document.head.appendChild(style);
+      }
 
       const drop = wrap.querySelector('#ocrDrop');
       const input = wrap.querySelector('#ocrInput');
@@ -72,7 +81,6 @@
         }
 
         progress.style.display = 'block';
-        bar.style.width = '12%';
         percent.textContent = 'Enviando PDF…';
         status.textContent = 'Preparando documento para OCR…';
 
@@ -84,9 +92,10 @@
         try {
           timer = setInterval(() => {
             const elapsed = Math.round((Date.now() - started) / 1000);
-            const current = parseFloat(bar.style.width) || 12;
-            bar.style.width = `${Math.min(90, current + 2)}%`;
-            percent.textContent = `Reconhecendo texto… ${elapsed}s`;
+            let msg = `Reconhecendo texto… ${elapsed}s`;
+            if (elapsed > 90) msg = `Ainda processando (${elapsed}s) — documentos com várias páginas ou em alta resolução podem levar alguns minutos. Isso é normal, não feche esta aba.`;
+            else if (elapsed > 30) msg = `Ainda processando (${elapsed}s) — pode levar um pouco mais em documentos maiores.`;
+            percent.textContent = msg;
           }, 1000);
 
           const res = await fetch('/api/ocr/pdf', { method: 'POST', body: fd });
@@ -101,9 +110,9 @@
 
           const blob = await res.blob();
           clearInterval(timer);
-          bar.style.width = '100%';
-          percent.textContent = 'OCR concluído — 100%';
+          percent.textContent = 'OCR concluído!';
           status.textContent = 'PDF processado com sucesso. O arquivo agora possui uma camada de texto pesquisável.';
+          progress.style.display = 'none';
 
           const url = URL.createObjectURL(blob);
           const link = document.createElement('a');
@@ -116,8 +125,7 @@
           body.appendChild(link);
         } catch (err) {
           clearInterval(timer);
-          bar.style.width = '0%';
-          percent.textContent = 'OCR não concluído';
+          progress.style.display = 'none';
           status.textContent = err.message || 'Erro ao processar o PDF.';
         }
       }

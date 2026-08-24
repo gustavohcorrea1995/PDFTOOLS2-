@@ -23,5 +23,5 @@
   }
   function hide(){if(!overlay)return;clearInterval(timer);clearTimeout(currentStepTimer);const bar=overlay.querySelector('.operation-progress-bar');bar.style.width='100%';bar.classList.remove('running');setTimeout(()=>overlay?.classList.add('hidden'),250)}
   const originalFetch=window.fetch.bind(window);
-  window.fetch=async(...args)=>{const url=typeof args[0]==='string'?args[0]:args[0]?.url||'';const tracked=url.includes('/api/')&&!url.includes('/api/preview/');if(tracked)show(url);try{return await originalFetch(...args)}finally{if(tracked)hide()}};
+  window.fetch=async(...args)=>{const url=typeof args[0]==='string'?args[0]:args[0]?.url||'';const tracked=url.includes('/api/')&&!url.includes('/api/preview/')&&!url.includes('/api/ocr/');if(tracked)show(url);try{return await originalFetch(...args)}finally{if(tracked)hide()}};
 })();
