@@ -66,8 +66,12 @@ const replacement = `const textBoxes = [];
     } catch (err) { console.error('Falha ao extrair geometria precisa:', err.message); }
     res.json({ fileId: finalName, pageCount, pageSizes, thumbnails, textBoxes });`;
 
-const pattern = /const textBoxes = \\[];[\\s\\S]*?res\\.json\\(\\{ fileId: finalName, pageCount, pageSizes, thumbnails, textBoxes \\}\\);/;
-if (pattern.test(source)) source = source.replace(pattern, replacement);
+const pattern = /const textBoxes = \[\];[\s\S]*?res\.json\(\{ fileId: finalName, pageCount, pageSizes, thumbnails, textBoxes \}\);/;
+if (pattern.test(source)) {
+  source = source.replace(pattern, replacement);
+} else {
+  console.error('PDFTools startup patch: textBoxes MuPDF pattern did not match — falling back to the coarser server.js extraction (assumes 612pt page width). Word positions in the editor will be off for non-Letter-sized pages.');
+}
 
 const serverModule = new Module(serverPath, module);
 serverModule.filename = serverPath;
