@@ -358,6 +358,44 @@
     return 'download';
   }
 
+  // O armazenamento temporário do servidor não é permanente entre
+  // reinícios (deploys, ou o servidor "dormir" por inatividade em planos
+  // gratuitos). Se isso acontecer entre o carregamento do PDF e o
+  // salvamento, o servidor não encontra mais o arquivo original. Como o
+  // PDF original continua na memória do navegador (variável `file`) e as
+  // edições são todas baseadas em posição (não dependem do fileId em si),
+  // dá para recuperar sozinho: reenviar o mesmo arquivo, pegar um fileId
+  // novo, e tentar salvar de novo - sem o usuário precisar fazer nada.
+  async function refreshFileId(){
+    if(!file)throw new Error('O PDF original não está mais disponível nesta sessão. Recarregue a página e envie o arquivo novamente.');
+    const fd=new FormData();fd.append('file',file);
+    const r=await fetch('/api/inspect',{method:'POST',body:fd});
+    if(!r.ok){
+      let msg='Não foi possível reenviar o PDF original ao servidor.';
+      try{const data=await r.json();if(data?.error)msg=data.error;}catch(_){}
+      throw new Error(msg);
+    }
+    const d=await r.json();
+    fileId=d.fileId;
+    return fileId;
+  }
+
+  function isMissingFileError(message){
+    return /original n[aã]o encontrado/i.test(String(message||''));
+  }
+
+  async function saveEditsToServer(edits){
+    const response=await fetch('/api/edit/native',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fileId,edits})});
+    if(!response.ok){
+      let message='Falha no motor PDFBox.';
+      try{const data=await response.json();if(data?.error)message=data.error;}catch(_){}
+      throw new Error(message);
+    }
+    const blob=await response.blob();
+    if(!blob.size)throw new Error('O motor retornou um PDF vazio.');
+    return blob;
+  }
+
   saveBtn.addEventListener('click',async()=>{
     if(!fileId)return;
     const filename=sanitizeFileName(fileNameOutInput?fileNameOutInput.value:'');
@@ -372,11 +410,18 @@
       const edits=textBoxes.filter(item=>String(item.id||'').startsWith('pnew-')||item.changed===true||String(item.text??'')!==String(item.originalText??'')||item.deleted===true).map(item=>({id:item.id,page:item.page,pdfX:Number(item.pdfX),pdfY:Number(item.pdfY),pdfWidth:Number(item.pdfWidth),pdfHeight:Number(item.pdfHeight),originalText:String(item.originalText??''),text:String(item.text??''),fontSize:Number(item.fontSize)||Number(item.pdfHeight)||12,color:(item.color||'#111111')+(item.bold?'|B':'')+(item.italic?'|I':'')+(item.underline?'|U':''),bold:item.bold===true,italic:item.italic===true,underline:item.underline===true,deleted:item.deleted===true}));
       if(!edits.length){setStatus('Nenhuma alteração para salvar.');return;}
 
-      // Passo 2 (pode demorar): processa no servidor.
-      const response=await fetch('/api/edit/native',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fileId,edits})});
-      if(!response.ok){let message='Falha no motor PDFBox.';try{const data=await response.json();if(data?.error)message=data.error;}catch(_){}throw new Error(message);}
-      const blob=await response.blob();
-      if(!blob.size)throw new Error('O motor retornou um PDF vazio.');
+      // Passo 2 (pode demorar): processa no servidor. Se o arquivo original
+      // sumiu do servidor (reinício), reenvia sozinho e tenta mais uma vez.
+      let blob;
+      try{
+        blob=await saveEditsToServer(edits);
+      }catch(err){
+        if(!isMissingFileError(err.message))throw err;
+        setStatus('O servidor reiniciou e perdeu o arquivo temporário. Reenviando o PDF original automaticamente…');
+        await refreshFileId();
+        setStatus('PDF reenviado. Salvando de novo…');
+        blob=await saveEditsToServer(edits);
+      }
 
       // Passo 3 (instantâneo): grava no local já escolhido no passo 1, ou baixa.
       const result=await deliverPdf(blob,filename,handle);
