@@ -17,10 +17,11 @@ module.exports = function registerOcrRoutes(app, { upload, UP, TMP, run, cleanup
       await fs.promises.mkdir(workDir, { recursive: true });
       const prefix = path.join(workDir, 'pagina');
 
-      // 200 DPI é um bom equilíbrio entre precisão do OCR e tempo/memória.
+      // 150 DPI mantém boa precisão de OCR com menos dados para processar -
+      // importante na instância gratuita, com CPU compartilhada e limitada.
       console.log('[OCR] Renderizando páginas em imagem…');
       await run('pdftocairo', [
-        '-png', '-r', '200', input, prefix
+        '-png', '-r', '150', input, prefix
       ], { timeout: 300000 });
 
       const images = fs.readdirSync(workDir)
@@ -41,7 +42,7 @@ module.exports = function registerOcrRoutes(app, { upload, UP, TMP, run, cleanup
         await run('tesseract', [
           imagePath,
           outBase,
-          '-l', 'por+eng',
+          '-l', 'por',
           'pdf'
         ], { timeout: 300000 });
 
