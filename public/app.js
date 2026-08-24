@@ -17,7 +17,7 @@ const TOOLS = [
   { id:'merge', icon:'🧷', title:'Juntar PDFs', desc:'Combine vários arquivos PDF em um só, na ordem que quiser.', tag:'Organizar' },
   { id:'split', icon:'✂️', title:'Dividir PDF', desc:'Separe páginas em arquivos independentes ou extraia intervalos.', tag:'Organizar' },
   { id:'edit', icon:'🗂️', title:'Organizar páginas', desc:'Exclua, gire e reordene páginas de um PDF.', tag:'Editar' },
-  { id:'annotate', icon:'✍️', title:'Adicionar texto/imagem', desc:'Insira texto ou carimbe uma imagem em qualquer página.', tag:'Editar' },
+  { id:'annotate', icon:'✍️', title:'Adicionar texto/imagem', desc:'Insira texto ou carimbe uma imagem em qualquer página.', tag:'Editar', disabled:true },
   { id:'compress', icon:'🗜️', title:'Comprimir PDF', desc:'Reduza o tamanho do arquivo mantendo a qualidade legível.', tag:'Otimizar' },
   { id:'images-to-pdf', icon:'🖼️', title:'Imagens → PDF', desc:'Transforme fotos e imagens em um único PDF.', tag:'Converter' },
   { id:'pdf-to-images', icon:'📷', title:'PDF → Imagens', desc:'Exporte cada página como PNG ou JPG.', tag:'Converter' },
@@ -27,7 +27,7 @@ const TOOLS = [
 
 function renderGrid(){
   toolGrid.innerHTML = '';
-  TOOLS.forEach(t=>{
+  TOOLS.filter(t => !t.disabled).forEach(t=>{
     const card = document.createElement('div');
     card.className = 'tool-card';
     card.innerHTML = `<span class="stamp-mark">${t.tag}</span>
@@ -47,6 +47,11 @@ backBtn.onclick = () => {
 
 function openTool(id){
   const tool = TOOLS.find(t=>t.id===id);
+  if(!tool || tool.disabled){
+    // Editor clássico desativado temporariamente - manda para o Editor PDF Pro.
+    window.location.href = '/native-editor.html';
+    return;
+  }
   hero.classList.add('hidden');
   workspace.classList.remove('hidden');
   toolTitle.textContent = tool.title;

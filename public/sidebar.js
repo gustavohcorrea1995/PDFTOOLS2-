@@ -21,7 +21,6 @@
       ['pdf-to-office', 'PDF → Word', '📄']
     ]},
     { title: 'Editar', items: [
-      ['annotate', 'Anotar (clássico)', '✍️'],
       ['ocr', 'Tornar PDF editável', '🪄']
     ]}
   ];
