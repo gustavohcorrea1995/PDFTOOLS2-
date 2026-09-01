@@ -41,14 +41,22 @@ const upload = multer({
 
 function run(cmd, args, options = {}) {
   return new Promise((resolve, reject) => {
+    const timeoutMs = options.timeout || 180000;
     execFile(cmd, args, {
       maxBuffer: 20 * 1024 * 1024,
-      timeout: options.timeout || 180000,
+      timeout: timeoutMs,
       windowsHide: true
     }, (err, stdout, stderr) => {
       if (err) {
         const detail = String(stderr || '').trim();
-        reject(new Error(detail ? `${err.message}: ${detail.slice(0, 2500)}` : err.message));
+        const error = new Error(detail ? `${err.message}: ${detail.slice(0, 2500)}` : err.message);
+        // Timeout do próprio Node manda SIGTERM; o sistema operacional
+        // matando por falta de memória costuma mandar SIGKILL - dá para
+        // diferenciar os dois motivos e dar uma mensagem honesta ao usuário
+        // em vez de vazar o comando/caminhos internos do servidor.
+        error.timedOut = err.signal === 'SIGTERM' && err.killed === true;
+        error.oomKilled = err.signal === 'SIGKILL';
+        reject(error);
       } else resolve(stdout);
     });
   });
