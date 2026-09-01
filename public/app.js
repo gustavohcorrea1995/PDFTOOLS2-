@@ -143,53 +143,75 @@ async function postForm(url, formData){
   return res;
 }
 
-function downloadBlob(blob, filename){
-  if(!blob || blob.size === 0){
-    throw new Error('O servidor não retornou um arquivo válido.');
-  }
+const canPickSaveLocation = typeof window.showSaveFilePicker === 'function';
 
+function splitExtension(filename){
   const dot = filename.lastIndexOf('.');
-  const defaultName = dot > 0 ? filename.slice(0, dot) : filename;
-  const extension = dot > 0 ? filename.slice(dot) : '';
+  return dot > 0 ? [filename.slice(0, dot), filename.slice(dot)] : [filename, ''];
+}
 
-  let chosen = window.prompt(
-    'Digite o nome do arquivo antes de baixar:',
-    defaultName
-  );
+function sanitizeFileName(raw){
+  return String(raw || '').trim().replace(/[\\/:*?"<>|]/g, '_');
+}
 
-  if(chosen === null){
-    return false;
+/**
+ * Pergunta ONDE salvar e com QUE NOME antes de iniciar qualquer envio ao
+ * servidor - essencial porque o diálogo nativo "Salvar como" do sistema
+ * operacional (showSaveFilePicker) só funciona como reação IMEDIATA a um
+ * clique do usuário. Se a gente esperasse o processamento terminar antes
+ * de perguntar (como era antes), o diálogo nativo falharia silenciosamente
+ * por causa do tempo já passado desde o clique.
+ *
+ * Devolve { cancelled } se o usuário desistiu (nesse caso nem chegamos a
+ * enviar nada ao servidor), ou { cancelled:false, deliver(blob) } para
+ * entregar o arquivo assim que ele estiver pronto.
+ */
+async function pickSaveTarget(defaultFilename){
+  const [defaultBase, extension] = splitExtension(defaultFilename);
+
+  if(canPickSaveLocation){
+    try{
+      const handle = await window.showSaveFilePicker({
+        suggestedName: defaultFilename,
+        types: extension ? [{ description: 'Arquivo', accept: { 'application/octet-stream': [extension] } }] : undefined
+      });
+      return {
+        cancelled: false,
+        async deliver(blob){
+          if(!blob || blob.size === 0) throw new Error('O servidor não retornou um arquivo válido.');
+          const writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+        }
+      };
+    }catch(err){
+      if(err && err.name === 'AbortError') return { cancelled: true };
+      console.warn('Seletor de pasta nativo indisponível, usando download padrão:', err);
+      // segue para o prompt de nome abaixo
+    }
   }
 
-  chosen = chosen.trim();
+  // Navegadores sem suporte ao seletor nativo (Firefox, Safari): pergunta
+  // só o nome e baixa para a pasta padrão de downloads do navegador.
+  let chosen = window.prompt('Digite o nome do arquivo antes de baixar:', defaultBase);
+  if(chosen === null) return { cancelled: true };
+  chosen = sanitizeFileName(chosen) || defaultBase;
+  if(extension && !chosen.toLowerCase().endsWith(extension.toLowerCase())) chosen += extension;
 
-  if(!chosen){
-    chosen = defaultName;
-  }
-
-  // Remove caracteres que o Windows não aceita em nomes de arquivos.
-  chosen = chosen.replace(/[\\/:*?"<>|]/g, '_');
-
-  if(extension && !chosen.toLowerCase().endsWith(extension.toLowerCase())){
-    chosen += extension;
-  }
-
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-
-  a.href = url;
-  a.download = chosen;
-  a.style.display = 'none';
-
-  document.body.appendChild(a);
-  a.click();
-
-  setTimeout(()=>{
-    a.remove();
-    URL.revokeObjectURL(url);
-  }, 1000);
-
-  return true;
+  return {
+    cancelled: false,
+    async deliver(blob){
+      if(!blob || blob.size === 0) throw new Error('O servidor não retornou um arquivo válido.');
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = chosen;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(()=>{ a.remove(); URL.revokeObjectURL(url); }, 1000);
+    }
+  };
 }
 
 // ---------- RENDERERS ----------
@@ -202,12 +224,14 @@ RENDERERS['merge'] = (root)=>{
   btn.onclick = async ()=>{
     const files = dz.getFiles();
     if(files.length < 2) return toast('Selecione pelo menos 2 arquivos PDF.', true);
+    const save = await pickSaveTarget('unido.pdf');
+    if(save.cancelled) return;
     const fd = new FormData();
     files.forEach(f=>fd.append('files', f));
     setLoading(btn,true,'Juntando…');
     try{
       const res = await postForm('/api/merge', fd);
-      downloadBlob(await res.blob(), 'unido.pdf');
+      await save.deliver(await res.blob());
       toast('PDFs unidos com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);
@@ -226,13 +250,15 @@ RENDERERS['split'] = (root)=>{
   btn.onclick = async ()=>{
     const files = dz.getFiles();
     if(files.length !== 1) return toast('Selecione um arquivo PDF.', true);
+    const save = await pickSaveTarget('partes.zip');
+    if(save.cancelled) return;
     const fd = new FormData();
     fd.append('file', files[0]);
     fd.append('ranges', document.getElementById('ranges').value);
     setLoading(btn,true,'Dividindo…');
     try{
       const res = await postForm('/api/split', fd);
-      downloadBlob(await res.blob(), 'partes.zip');
+      await save.deliver(await res.blob());
       toast('PDF dividido com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);
@@ -255,13 +281,15 @@ RENDERERS['compress'] = (root)=>{
   btn.onclick = async ()=>{
     const files = dz.getFiles();
     if(files.length !== 1) return toast('Selecione um arquivo PDF.', true);
+    const save = await pickSaveTarget('comprimido.pdf');
+    if(save.cancelled) return;
     const fd = new FormData();
     fd.append('file', files[0]);
     fd.append('level', document.getElementById('level').value);
     setLoading(btn,true,'Comprimindo…');
     try{
       const res = await postForm('/api/compress', fd);
-      downloadBlob(await res.blob(), 'comprimido.pdf');
+      await save.deliver(await res.blob());
       toast('PDF comprimido com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);
@@ -275,12 +303,14 @@ RENDERERS['images-to-pdf'] = (root)=>{
   btn.onclick = async ()=>{
     const files = dz.getFiles();
     if(files.length < 1) return toast('Selecione pelo menos uma imagem.', true);
+    const save = await pickSaveTarget('imagens.pdf');
+    if(save.cancelled) return;
     const fd = new FormData();
     files.forEach(f=>fd.append('files', f));
     setLoading(btn,true,'Convertendo…');
     try{
       const res = await postForm('/api/convert/images-to-pdf', fd);
-      downloadBlob(await res.blob(), 'imagens.pdf');
+      await save.deliver(await res.blob());
       toast('PDF gerado com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);
@@ -299,13 +329,15 @@ RENDERERS['pdf-to-images'] = (root)=>{
   btn.onclick = async ()=>{
     const files = dz.getFiles();
     if(files.length !== 1) return toast('Selecione um arquivo PDF.', true);
+    const save = await pickSaveTarget('paginas.zip');
+    if(save.cancelled) return;
     const fd = new FormData();
     fd.append('file', files[0]);
     fd.append('format', document.getElementById('fmt').value);
     setLoading(btn,true,'Exportando…');
     try{
       const res = await postForm('/api/convert/pdf-to-images', fd);
-      downloadBlob(await res.blob(), 'paginas.zip');
+      await save.deliver(await res.blob());
       toast('Imagens exportadas com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);
@@ -319,13 +351,15 @@ RENDERERS['office-to-pdf'] = (root)=>{
   btn.onclick = async ()=>{
     const files = dz.getFiles();
     if(files.length !== 1) return toast('Selecione um arquivo.', true);
+    const save = await pickSaveTarget('convertido.pdf');
+    if(save.cancelled) return;
     const fd = new FormData();
     fd.append('file', files[0]);
     fd.append('target', 'pdf');
     setLoading(btn,true,'Convertendo…');
     try{
       const res = await postForm('/api/convert/office', fd);
-      downloadBlob(await res.blob(), 'convertido.pdf');
+      await save.deliver(await res.blob());
       toast('Arquivo convertido com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);
@@ -351,13 +385,16 @@ RENDERERS['pdf-to-office'] = (root)=>{
   btn.onclick = async ()=>{
     const files = dz.getFiles();
     if(files.length !== 1) return toast('Selecione um arquivo PDF.', true);
+    const target = document.getElementById('target').value;
+    const save = await pickSaveTarget('convertido.' + target);
+    if(save.cancelled) return;
     const fd = new FormData();
     fd.append('file', files[0]);
-    fd.append('target', document.getElementById('target').value);
+    fd.append('target', target);
     setLoading(btn,true,'Convertendo…');
     try{
       const res = await postForm('/api/convert/office', fd);
-      downloadBlob(await res.blob(), 'convertido.' + document.getElementById('target').value);
+      await save.deliver(await res.blob());
       toast('Arquivo convertido com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);
@@ -420,6 +457,8 @@ RENDERERS['edit'] = (root)=>{
   btn.onclick = async ()=>{
     const files = dz.getFiles();
     if(!state.pageCount) return toast('Envie um PDF primeiro.', true);
+    const save = await pickSaveTarget('editado.pdf');
+    if(save.cancelled) return;
     const fd = new FormData();
     fd.append('file', files[files.length-1]);
     fd.append('operations', JSON.stringify({
@@ -430,7 +469,7 @@ RENDERERS['edit'] = (root)=>{
     setLoading(btn,true,'Aplicando…');
     try{
       const res = await postForm('/api/pages/edit', fd);
-      downloadBlob(await res.blob(), 'editado.pdf');
+      await save.deliver(await res.blob());
       toast('Alterações aplicadas com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);
@@ -894,6 +933,9 @@ RENDERERS['annotate'] = (root)=>{
       return toast('Nenhuma alteração foi feita.', true);
     }
 
+    const save = await pickSaveTarget('editado.pdf');
+    if(save.cancelled) return;
+
     const fd = new FormData();
     fd.append('fileId', fileId);
     fd.append('annotations', JSON.stringify(edits));
@@ -904,7 +946,7 @@ RENDERERS['annotate'] = (root)=>{
       const res = await postForm('/api/edit/annotate', fd);
       const blob = await res.blob();
 
-      downloadBlob(blob, 'editado.pdf');
+      await save.deliver(blob);
 
       toast('PDF editado e baixado com sucesso!');
     }catch(e){

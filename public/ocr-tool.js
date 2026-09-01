@@ -114,14 +114,31 @@
           status.textContent = 'PDF processado com sucesso. O arquivo agora possui uma camada de texto pesquisável.';
           progress.style.display = 'none';
 
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = 'pdf-editavel-ocr.pdf';
+          const link = document.createElement('button');
           link.className = 'btn';
           link.textContent = 'Baixar PDF editável';
           link.style.display = 'inline-block';
           link.style.marginTop = '12px';
+          link.onclick = async () => {
+            // O clique aqui é um gesto novo e "fresco" do usuário, então o
+            // seletor nativo de local para salvar funciona normalmente,
+            // mesmo o OCR já tendo terminado há um tempo.
+            const save = await (window.pickSaveTarget
+              ? window.pickSaveTarget('pdf-editavel-ocr.pdf')
+              : { cancelled: false, deliver: async (b) => {
+                  const url = URL.createObjectURL(b);
+                  const a = document.createElement('a');
+                  a.href = url; a.download = 'pdf-editavel-ocr.pdf';
+                  document.body.appendChild(a); a.click(); a.remove();
+                  setTimeout(() => URL.revokeObjectURL(url), 1000);
+                } });
+            if (save.cancelled) return;
+            try {
+              await save.deliver(blob);
+            } catch (e) {
+              status.textContent = e.message || 'Erro ao salvar o arquivo.';
+            }
+          };
           body.appendChild(link);
         } catch (err) {
           clearInterval(timer);
