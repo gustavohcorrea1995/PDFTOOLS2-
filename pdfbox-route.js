@@ -21,7 +21,14 @@ async function redactRegions(inputPath, edits) {
       if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) continue;
       const page = pdf.loadPage(pageIndex);
       const bounds = page.getBounds();
-      const pad = 1.5;
+      // Margem pequena, só para cobrir arredondamento/antialiasing das
+      // bordas do glifo - NÃO para "dar folga". Testado empiricamente:
+      // com a margem antiga (1.5pt), em texto denso (tabelas com fonte
+      // pequena, palavras separadas por ~1pt) a redação de uma palavra
+      // podia comer parte da palavra vizinha. Com 0.3pt isso não acontece
+      // nem em espaçamentos de 0.2pt entre palavras, e a palavra alvo
+      // continua sendo removida por completo.
+      const pad = 0.3;
       const rect = [
         Math.max(bounds[0], x - pad), Math.max(bounds[1], y - pad),
         Math.min(bounds[2], x + w + pad), Math.min(bounds[3], y + h + pad),

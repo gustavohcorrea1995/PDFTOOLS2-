@@ -255,7 +255,10 @@ public class NativePdfEditor {
         // e.x/e.y/e.w/e.h chegam em espaco "top-down" (origem no topo, como
         // extraido pelo servidor Node/MuPDF). O PDFBox usa origem embaixo a
         // esquerda, entao fazemos o flip vertical aqui.
-        float padX = 1.5f, padY = 1.5f;
+        // Margem pequena, só para cobrir arredondamento/antialiasing das
+        // bordas do glifo - nao para "dar folga" (testado empiricamente:
+        // 1.5pt chegava a cobrir parte de palavras vizinhas em texto denso).
+        float padX = 0.3f, padY = 0.3f;
         float rectX = (float) e.x - padX;
         float rectYTop = pageH - (float) e.y;
         float rectHeight = (float) e.h + padY * 2;
