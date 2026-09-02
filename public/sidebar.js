@@ -77,6 +77,23 @@
     sync();
   }
 
+  function setupThemeToggle(btn) {
+    if (!btn) return;
+    const stored = (() => { try { return localStorage.getItem('pdftools-theme'); } catch (e) { return null; } })();
+    let theme = stored === 'light' ? 'light' : 'dark';
+
+    function apply(t) {
+      theme = t;
+      if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+      else document.documentElement.removeAttribute('data-theme');
+      btn.innerHTML = t === 'light' ? '☾ <span>Tema escuro</span>' : '☀ <span>Tema claro</span>';
+      try { localStorage.setItem('pdftools-theme', t); } catch (e) {}
+    }
+
+    apply(theme);
+    btn.onclick = () => apply(theme === 'light' ? 'dark' : 'light');
+  }
+
   function build() {
     if (document.getElementById('sideNav')) return;
     const nav = document.createElement('aside');
@@ -86,9 +103,12 @@
       <div class="side-brand"><div class="side-logo">PDF</div><div><strong>PDFTools</strong><span>Ferramentas PDF</span></div></div>
       <button class="side-home" type="button">⌂ <span>Início</span></button>
       <div class="side-groups"></div>
+      <button class="side-theme-toggle" type="button" id="sideThemeToggle"></button>
       <div class="side-footer">PDFTools2</div>`;
     document.body.prepend(nav);
     document.body.classList.add('has-side-nav');
+
+    setupThemeToggle(nav.querySelector('#sideThemeToggle'));
 
     const groupsRoot = nav.querySelector('.side-groups');
     groups.forEach((group) => {
