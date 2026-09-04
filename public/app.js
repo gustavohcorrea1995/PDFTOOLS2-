@@ -218,16 +218,113 @@ async function pickSaveTarget(defaultFilename){
 const RENDERERS = {};
 
 RENDERERS['merge'] = (root)=>{
-  const dz = makeDropzone(root, { accept:'.pdf', label:'Arraste 2 ou mais PDFs' });
+  // Zona de soltar arquivos própria (não usa makeDropzone) para poder
+  // mostrar miniaturas e permitir reordenar - a lista padrão só mostra nomes.
+  const dz = document.createElement('div');
+  dz.className = 'dropzone';
+  dz.innerHTML = `<div class="dz-title">Arraste 2 ou mais PDFs</div><p>Seus arquivos ficam só no seu servidor local</p>`;
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = '.pdf'; input.multiple = true; input.style.display = 'none';
+  dz.appendChild(input);
+  root.appendChild(dz);
+
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  hint.textContent = '';
+  root.appendChild(hint);
+
+  const grid = document.createElement('div');
+  grid.className = 'merge-grid';
+  root.appendChild(grid);
+
+  let items = []; // { file, thumb, pageCount, loading }
+
+  async function fetchPreview(file){
+    const fd = new FormData();
+    fd.append('file', file);
+    try{
+      const res = await postForm('/api/inspect', fd);
+      const data = await res.json();
+      return { thumb: data.thumbnails?.[0] || null, pageCount: data.pageCount || null };
+    }catch(e){
+      return { thumb: null, pageCount: null };
+    }
+  }
+
+  function updateHint(){
+    if(!items.length){ hint.textContent = ''; return; }
+    const totalPages = items.reduce((sum,it)=> sum + (it.pageCount||0), 0);
+    hint.textContent = `${items.length} arquivo(s) · ${totalPages || '…'} página(s) no total · arraste os cartões para mudar a ordem de junção`;
+  }
+
+  function renderGrid(){
+    updateHint();
+    grid.innerHTML = '';
+    items.forEach((item, idx)=>{
+      const card = document.createElement('div');
+      card.className = 'merge-card';
+      card.draggable = true;
+      card.innerHTML = `
+        <div class="merge-card-order">${idx+1}</div>
+        <div class="merge-card-thumb">${item.thumb ? `<img src="${item.thumb}" alt="">` : '<div class="merge-card-loading">Carregando…</div>'}</div>
+        <div class="merge-card-name" title="${item.file.name}">${item.file.name}</div>
+        <div class="merge-card-meta">${item.pageCount ? item.pageCount + (item.pageCount===1?' página':' páginas') : ''}</div>
+        <div class="merge-card-actions">
+          <button data-a="left" title="Mover para trás" ${idx===0?'disabled':''}>←</button>
+          <button data-a="right" title="Mover para frente" ${idx===items.length-1?'disabled':''}>→</button>
+          <button data-a="del" title="Remover">✕</button>
+        </div>`;
+      card.querySelector('[data-a=left]').onclick = ()=>{ if(idx>0){ [items[idx-1],items[idx]]=[items[idx],items[idx-1]]; renderGrid(); } };
+      card.querySelector('[data-a=right]').onclick = ()=>{ if(idx<items.length-1){ [items[idx+1],items[idx]]=[items[idx],items[idx+1]]; renderGrid(); } };
+      card.querySelector('[data-a=del]').onclick = ()=>{ items.splice(idx,1); renderGrid(); };
+
+      card.addEventListener('dragstart', (e)=>{ e.dataTransfer.setData('text/plain', String(idx)); e.dataTransfer.effectAllowed='move'; setTimeout(()=>card.classList.add('dragging'),0); });
+      card.addEventListener('dragend', ()=> card.classList.remove('dragging'));
+      card.addEventListener('dragover', (e)=>{ e.preventDefault(); card.classList.add('drag-over'); });
+      card.addEventListener('dragleave', ()=> card.classList.remove('drag-over'));
+      card.addEventListener('drop', (e)=>{
+        e.preventDefault();
+        card.classList.remove('drag-over');
+        const fromIdx = Number(e.dataTransfer.getData('text/plain'));
+        if(Number.isNaN(fromIdx) || fromIdx === idx) return;
+        const [moved] = items.splice(fromIdx,1);
+        items.splice(idx,0,moved);
+        renderGrid();
+      });
+
+      grid.appendChild(card);
+    });
+  }
+
+  async function addFiles(newFiles){
+    const toAdd = newFiles.map(file => ({ file, thumb: null, pageCount: null }));
+    items = items.concat(toAdd);
+    renderGrid();
+    for(const item of toAdd){
+      const { thumb, pageCount } = await fetchPreview(item.file);
+      item.thumb = thumb; item.pageCount = pageCount;
+      renderGrid();
+    }
+  }
+
+  dz.onclick = ()=> input.click();
+  input.onchange = ()=>{ addFiles(Array.from(input.files)); input.value=''; };
+  ['dragover','dragenter'].forEach(ev => dz.addEventListener(ev, e=>{ e.preventDefault(); dz.classList.add('drag'); }));
+  ['dragleave'].forEach(ev => dz.addEventListener(ev, e=>{ e.preventDefault(); dz.classList.remove('drag'); }));
+  dz.addEventListener('drop', e=>{
+    e.preventDefault();
+    dz.classList.remove('drag');
+    addFiles(Array.from(e.dataTransfer.files).filter(f=>/\.pdf$/i.test(f.name)));
+  });
+
   const btn = makeButton(root, 'Juntar PDFs');
   btn.dataset.label = btn.textContent;
   btn.onclick = async ()=>{
-    const files = dz.getFiles();
-    if(files.length < 2) return toast('Selecione pelo menos 2 arquivos PDF.', true);
+    if(items.length < 2) return toast('Selecione pelo menos 2 arquivos PDF.', true);
     const save = await pickSaveTarget('unido.pdf');
     if(save.cancelled) return;
     const fd = new FormData();
-    files.forEach(f=>fd.append('files', f));
+    items.forEach(it=>fd.append('files', it.file));
     setLoading(btn,true,'Juntando…');
     try{
       const res = await postForm('/api/merge', fd);
