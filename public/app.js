@@ -337,21 +337,89 @@ RENDERERS['merge'] = (root)=>{
 
 RENDERERS['split'] = (root)=>{
   const dz = makeDropzone(root, { accept:'.pdf', multiple:false, label:'Arraste um PDF' });
-  const field = document.createElement('div');
-  field.className='field';
-  field.innerHTML = `<label>Intervalos de páginas (ex: 1-3,4,5-6). Deixe em branco para separar todas as páginas.</label>
-    <input type="text" id="ranges" placeholder="1-3,4,5-6">`;
-  root.appendChild(field);
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  root.appendChild(hint);
+  const grid = document.createElement('div');
+  grid.className = 'split-grid';
+  root.appendChild(grid);
+
+  // state.splits guarda, em números de página 1-based, APÓS qual página
+  // existe uma divisão (ex: splits={3} => um arquivo com as págs. 1-3 e
+  // outro com o restante).
+  let state = { pageCount: 0, thumbs: [], splits: new Set() };
+
+  dz.el.onchange = async (files)=>{
+    if(files.length !== 1) return;
+    grid.innerHTML = '';
+    hint.textContent = 'Carregando páginas…';
+    const fd = new FormData();
+    fd.append('file', files[0]);
+    try{
+      const res = await postForm('/api/inspect', fd);
+      const data = await res.json();
+      state.pageCount = data.pageCount;
+      state.thumbs = data.thumbnails || [];
+      state.splits = new Set();
+      renderGrid();
+    }catch(e){ toast(e.message, true); hint.textContent=''; }
+  };
+
+  function computeGroups(){
+    const groups = [];
+    let start = 1;
+    for(let p=1; p<=state.pageCount; p++){
+      if(state.splits.has(p)){ groups.push([start,p]); start = p+1; }
+    }
+    groups.push([start, state.pageCount]);
+    return groups;
+  }
+
+  function updateHint(){
+    if(!state.pageCount){ hint.textContent = ''; return; }
+    const groups = computeGroups();
+    const desc = groups.map(g => g[0]===g[1] ? `pág. ${g[0]}` : `págs. ${g[0]}–${g[1]}`).join(' · ');
+    hint.textContent = groups.length > 1
+      ? `${groups.length} arquivos serão gerados: ${desc} · clique num "+" entre páginas para adicionar/remover uma divisão`
+      : `Nenhuma divisão marcada ainda - clique num "+" entre as páginas para separar em arquivos diferentes`;
+  }
+
+  function renderGrid(){
+    updateHint();
+    grid.innerHTML = '';
+    for(let p=1; p<=state.pageCount; p++){
+      const thumb = document.createElement('div');
+      thumb.className = 'split-thumb';
+      thumb.innerHTML = `<img src="${state.thumbs[p-1]||''}" alt=""><div class="pnum">Pág. ${p}</div>`;
+      grid.appendChild(thumb);
+
+      if(p < state.pageCount){
+        const active = state.splits.has(p);
+        const divider = document.createElement('button');
+        divider.type = 'button';
+        divider.className = 'split-divider' + (active ? ' active' : '');
+        divider.title = active ? 'Remover divisão aqui' : 'Dividir aqui';
+        divider.textContent = active ? '✂' : '+';
+        divider.onclick = ()=>{ active ? state.splits.delete(p) : state.splits.add(p); renderGrid(); };
+        grid.appendChild(divider);
+      }
+    }
+  }
+
   const btn = makeButton(root, 'Dividir PDF');
   btn.dataset.label = btn.textContent;
   btn.onclick = async ()=>{
     const files = dz.getFiles();
     if(files.length !== 1) return toast('Selecione um arquivo PDF.', true);
+    if(!state.pageCount) return toast('Aguarde o PDF carregar.', true);
+    const groups = computeGroups();
+    if(groups.length < 2) return toast('Adicione ao menos uma divisão entre as páginas.', true);
+    const ranges = groups.map(g => g[0]===g[1] ? String(g[0]) : `${g[0]}-${g[1]}`).join(',');
     const save = await pickSaveTarget('partes.zip');
     if(save.cancelled) return;
     const fd = new FormData();
     fd.append('file', files[0]);
-    fd.append('ranges', document.getElementById('ranges').value);
+    fd.append('ranges', ranges);
     setLoading(btn,true,'Dividindo…');
     try{
       const res = await postForm('/api/split', fd);
@@ -394,16 +462,89 @@ RENDERERS['compress'] = (root)=>{
 };
 
 RENDERERS['images-to-pdf'] = (root)=>{
-  const dz = makeDropzone(root, { accept:'image/*', label:'Arraste imagens (JPG, PNG…)' });
+  const dz = document.createElement('div');
+  dz.className = 'dropzone';
+  dz.innerHTML = `<div class="dz-title">Arraste imagens (JPG, PNG…)</div><p>Seus arquivos ficam só no seu servidor local</p>`;
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'image/*'; input.multiple = true; input.style.display = 'none';
+  dz.appendChild(input);
+  root.appendChild(dz);
+
+  const hint = document.createElement('p');
+  hint.className = 'hint';
+  root.appendChild(hint);
+
+  const grid = document.createElement('div');
+  grid.className = 'merge-grid';
+  root.appendChild(grid);
+
+  let items = []; // { file, thumb } - thumb é local (URL.createObjectURL), não precisa do servidor
+
+  function updateHint(){
+    hint.textContent = items.length ? `${items.length} imagem(ns) · a ordem aqui vira a ordem das páginas do PDF · arraste para reordenar` : '';
+  }
+
+  function renderGrid(){
+    updateHint();
+    grid.innerHTML = '';
+    items.forEach((item, idx)=>{
+      const card = document.createElement('div');
+      card.className = 'merge-card';
+      card.draggable = true;
+      card.innerHTML = `
+        <div class="merge-card-order">${idx+1}</div>
+        <div class="merge-card-thumb"><img src="${item.thumb}" alt=""></div>
+        <div class="merge-card-name" title="${item.file.name}">${item.file.name}</div>
+        <div class="merge-card-actions">
+          <button data-a="left" title="Mover para trás" ${idx===0?'disabled':''}>←</button>
+          <button data-a="right" title="Mover para frente" ${idx===items.length-1?'disabled':''}>→</button>
+          <button data-a="del" title="Remover">✕</button>
+        </div>`;
+      card.querySelector('[data-a=left]').onclick = ()=>{ if(idx>0){ [items[idx-1],items[idx]]=[items[idx],items[idx-1]]; renderGrid(); } };
+      card.querySelector('[data-a=right]').onclick = ()=>{ if(idx<items.length-1){ [items[idx+1],items[idx]]=[items[idx],items[idx+1]]; renderGrid(); } };
+      card.querySelector('[data-a=del]').onclick = ()=>{ URL.revokeObjectURL(item.thumb); items.splice(idx,1); renderGrid(); };
+
+      card.addEventListener('dragstart', (e)=>{ e.dataTransfer.setData('text/plain', String(idx)); e.dataTransfer.effectAllowed='move'; setTimeout(()=>card.classList.add('dragging'),0); });
+      card.addEventListener('dragend', ()=> card.classList.remove('dragging'));
+      card.addEventListener('dragover', (e)=>{ e.preventDefault(); card.classList.add('drag-over'); });
+      card.addEventListener('dragleave', ()=> card.classList.remove('drag-over'));
+      card.addEventListener('drop', (e)=>{
+        e.preventDefault();
+        card.classList.remove('drag-over');
+        const fromIdx = Number(e.dataTransfer.getData('text/plain'));
+        if(Number.isNaN(fromIdx) || fromIdx === idx) return;
+        const [moved] = items.splice(fromIdx,1);
+        items.splice(idx,0,moved);
+        renderGrid();
+      });
+
+      grid.appendChild(card);
+    });
+  }
+
+  function addFiles(newFiles){
+    newFiles.forEach(file=>{ items.push({ file, thumb: URL.createObjectURL(file) }); });
+    renderGrid();
+  }
+
+  dz.onclick = ()=> input.click();
+  input.onchange = ()=>{ addFiles(Array.from(input.files)); input.value=''; };
+  ['dragover','dragenter'].forEach(ev => dz.addEventListener(ev, e=>{ e.preventDefault(); dz.classList.add('drag'); }));
+  ['dragleave'].forEach(ev => dz.addEventListener(ev, e=>{ e.preventDefault(); dz.classList.remove('drag'); }));
+  dz.addEventListener('drop', e=>{
+    e.preventDefault();
+    dz.classList.remove('drag');
+    addFiles(Array.from(e.dataTransfer.files).filter(f=>f.type.startsWith('image/')));
+  });
+
   const btn = makeButton(root, 'Converter para PDF');
   btn.dataset.label = btn.textContent;
   btn.onclick = async ()=>{
-    const files = dz.getFiles();
-    if(files.length < 1) return toast('Selecione pelo menos uma imagem.', true);
+    if(items.length < 1) return toast('Selecione pelo menos uma imagem.', true);
     const save = await pickSaveTarget('imagens.pdf');
     if(save.cancelled) return;
     const fd = new FormData();
-    files.forEach(f=>fd.append('files', f));
+    items.forEach(it=>fd.append('files', it.file));
     setLoading(btn,true,'Convertendo…');
     try{
       const res = await postForm('/api/convert/images-to-pdf', fd);
