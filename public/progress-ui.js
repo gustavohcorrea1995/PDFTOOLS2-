@@ -4,7 +4,6 @@
     '/api/split': { title: 'Dividindo PDF', steps: ['Enviando arquivo', 'Separando páginas', 'Preparando arquivos'] },
     '/api/inspect': { title: 'Preparando seu PDF', steps: ['Enviando arquivo', 'Lendo estrutura e textos', 'Renderizando prévias'] },
     '/api/pages/edit': { title: 'Organizando páginas', steps: ['Enviando PDF', 'Aplicando alterações', 'Preparando arquivo final'] },
-    '/api/edit/annotate': { title: 'Salvando edição', steps: ['Enviando alterações', 'Editando conteúdo do PDF', 'Preparando arquivo final'] },
     '/api/compress': { title: 'Comprimindo PDF', steps: ['Enviando arquivo', 'Otimizando PDF', 'Finalizando arquivo'] },
     '/api/convert/images-to-pdf': { title: 'Criando PDF', steps: ['Enviando imagens', 'Montando páginas', 'Finalizando PDF'] },
     '/api/convert/pdf-to-images': { title: 'Convertendo páginas', steps: ['Enviando PDF', 'Renderizando páginas', 'Criando arquivo ZIP'] },
