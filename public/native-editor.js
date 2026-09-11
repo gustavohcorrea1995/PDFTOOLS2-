@@ -169,7 +169,43 @@
     wrap.querySelectorAll('.native-text-object').forEach(e=>e.remove());
     const size=pageSizes[page-1];if(!size||!img.clientWidth||!img.clientHeight)return;
     const sx=img.clientWidth/Number(size.width),sy=img.clientHeight/Number(size.height);
-    textBoxes.filter(t=>Number(t.page)===page).forEach(item=>{const box=document.createElement('div');box.className='native-text-object';box.dataset.id=item.id;const left=Number(item.pdfX)*sx,top=Number(item.pdfY)*sy,width=Math.max(4,Number(item.pdfWidth)*sx),height=Math.max(8,Number(item.pdfHeight)*sy);box.style.cssText=`position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${height}px;box-sizing:border-box;z-index:5;cursor:text;padding:0 1px;white-space:nowrap;overflow:visible;line-height:1;`;applyBoxVisual(item,box,sx,sy);if(searchMatches[searchIndex]&&String(searchMatches[searchIndex].id)===String(item.id))box.classList.add('search-hit');box.addEventListener('click',ev=>{ev.stopPropagation();if(item.deleted){item.deleted=false;item.changed=false;dirty=true;pushHistory();renderTextObjects(page,img,wrap);selectText(item,null,page,img,wrap,sx,sy);setStatus('Exclusão desfeita.');return;}if(mode==='delete'){item.deleted=true;item.changed=true;dirty=true;selectedItems.add(String(item.id));pushHistory();renderTextObjects(page,img,wrap);setStatus('Texto marcado para exclusão. A área foi coberta na prévia; o PDF só será alterado ao salvar.');return;}if(['bold','italic','underline'].includes(mode)){item[mode]=!item[mode];item.changed=true;dirty=true;pushHistory();renderTextObjects(page,img,wrap);const label=mode==='bold'?'Negrito':mode==='italic'?'Itálico':'Sublinhado';setStatus(`${label} ${item[mode]?'aplicado':'removido'}. Clique em outros textos para continuar aplicando, ou mude de ferramenta.`);return;}if(ev.ctrlKey||ev.metaKey){const id=String(item.id);selectedItems.has(id)?selectedItems.delete(id):selectedItems.add(id);selected=item;refreshSelectionVisual();showMultiProps();setStatus(`${selectedItems.size} texto(s) selecionado(s) no total. Use Ctrl+clique para adicionar/remover.`);return;}clearSelection();selectedItems.add(String(item.id));selectText(item,box,page,img,wrap,sx,sy);});wrap.appendChild(box);});
+    textBoxes.filter(t=>Number(t.page)===page).forEach(item=>{const box=document.createElement('div');box.className='native-text-object';box.dataset.id=item.id;const isNew=String(item.id||'').startsWith('pnew-');const left=Number(item.pdfX)*sx,top=Number(item.pdfY)*sy,width=Math.max(4,Number(item.pdfWidth)*sx),height=Math.max(8,Number(item.pdfHeight)*sy);box.style.cssText=`position:absolute;left:${left}px;top:${top}px;width:${width}px;height:${height}px;box-sizing:border-box;z-index:5;cursor:${isNew&&mode==='select'?'move':'text'};padding:0 1px;white-space:nowrap;overflow:visible;line-height:1;`;applyBoxVisual(item,box,sx,sy);if(searchMatches[searchIndex]&&String(searchMatches[searchIndex].id)===String(item.id))box.classList.add('search-hit');
+
+      // Caixas de texto novo (criadas com a ferramenta "T Texto") podem ser
+      // arrastadas para reposicionar - o texto detectado do PDF original
+      // fica fixo, já que representa a posição real do documento.
+      let justDragged=false;
+      if(isNew){
+        box.addEventListener('mousedown',ev=>{
+          if(mode!=='select'||ev.button!==0)return;
+          ev.preventDefault();ev.stopPropagation();
+          let dragging=false;
+          const startX=ev.clientX,startY=ev.clientY;
+          const startPdfX=Number(item.pdfX),startPdfY=Number(item.pdfY);
+          const onMove=mv=>{
+            const dx=mv.clientX-startX,dy=mv.clientY-startY;
+            if(!dragging&&Math.hypot(dx,dy)<4)return;
+            dragging=true;
+            item.pdfX=Math.max(0,startPdfX+dx/sx);
+            item.pdfY=Math.max(0,startPdfY+dy/sy);
+            box.style.left=`${Number(item.pdfX)*sx}px`;
+            box.style.top=`${Number(item.pdfY)*sy}px`;
+          };
+          const onUp=()=>{
+            document.removeEventListener('mousemove',onMove);
+            document.removeEventListener('mouseup',onUp);
+            if(dragging){
+              justDragged=true;
+              item.changed=true;dirty=true;pushHistory();
+              setStatus('Texto reposicionado. Ainda não salvo no PDF.');
+            }
+          };
+          document.addEventListener('mousemove',onMove);
+          document.addEventListener('mouseup',onUp);
+        });
+      }
+
+      box.addEventListener('click',ev=>{ev.stopPropagation();if(justDragged){justDragged=false;return;}if(item.deleted){item.deleted=false;item.changed=false;dirty=true;pushHistory();renderTextObjects(page,img,wrap);selectText(item,null,page,img,wrap,sx,sy);setStatus('Exclusão desfeita.');return;}if(mode==='delete'){item.deleted=true;item.changed=true;dirty=true;selectedItems.add(String(item.id));pushHistory();renderTextObjects(page,img,wrap);setStatus('Texto marcado para exclusão. A área foi coberta na prévia; o PDF só será alterado ao salvar.');return;}if(['bold','italic','underline'].includes(mode)){item[mode]=!item[mode];item.changed=true;dirty=true;pushHistory();renderTextObjects(page,img,wrap);const label=mode==='bold'?'Negrito':mode==='italic'?'Itálico':'Sublinhado';setStatus(`${label} ${item[mode]?'aplicado':'removido'}. Clique em outros textos para continuar aplicando, ou mude de ferramenta.`);return;}if(ev.ctrlKey||ev.metaKey){const id=String(item.id);selectedItems.has(id)?selectedItems.delete(id):selectedItems.add(id);selected=item;refreshSelectionVisual();showMultiProps();setStatus(`${selectedItems.size} texto(s) selecionado(s) no total. Use Ctrl+clique para adicionar/remover.`);return;}clearSelection();selectedItems.add(String(item.id));selectText(item,box,page,img,wrap,sx,sy);});wrap.appendChild(box);});
   }
 
   function refreshCurrentPageVisual(){
