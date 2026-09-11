@@ -672,7 +672,7 @@ RENDERERS['edit'] = (root)=>{
       div.className = 'page-thumb' + (state.deleted.has(pageNum) ? ' marked' : '');
       const rot = state.rotations[pageNum] || 0;
       div.innerHTML = `
-        <img src="${state.thumbs[pageNum-1]}" style="transform:rotate(${rot}deg)">
+        <div class="page-thumb-frame"><img src="${state.thumbs[pageNum-1]}" style="transform:rotate(${rot}deg)"></div>
         <div class="pnum">Pág. ${pageNum}</div>
         <div class="actions">
           <button data-a="left">↺</button>
