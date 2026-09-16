@@ -96,6 +96,7 @@
             if (elapsed > 90) msg = `Ainda processando (${elapsed}s) — documentos com várias páginas ou em alta resolução podem levar alguns minutos. Isso é normal, não feche esta aba.`;
             else if (elapsed > 30) msg = `Ainda processando (${elapsed}s) — pode levar um pouco mais em documentos maiores.`;
             percent.textContent = msg;
+            status.textContent = msg;
           }, 1000);
 
           const res = await fetch('/api/ocr/pdf', { method: 'POST', body: fd });

@@ -719,7 +719,16 @@ RENDERERS['edit'] = (root)=>{
 // abre a ferramenta certa direto, sem precisar clicar no card de novo.
 // Fica no fim do arquivo de propósito: precisa que RENDERERS já esteja
 // totalmente preenchido antes de chamar openTool().
+//
+// IMPORTANTE: alguns ids de ferramenta (ex: 'ocr') são registrados por
+// scripts separados (ocr-tool.js), que fazem a própria checagem da query
+// string de forma independente, DEPOIS deste arquivo carregar. Se a gente
+// chamasse openTool() para esses ids aqui, cairiam no redirecionamento
+// genérico (usado para links antigos de ferramentas removidas, como o
+// editor clássico) ANTES do script correto sequer rodar - por isso esses
+// ids ficam de fora desta checagem.
+const EXTERNALLY_HANDLED_TOOL_IDS = ['ocr'];
 (() => {
   const qsTool = new URLSearchParams(location.search).get('tool');
-  if (qsTool) openTool(qsTool);
+  if (qsTool && !EXTERNALLY_HANDLED_TOOL_IDS.includes(qsTool)) openTool(qsTool);
 })();
