@@ -249,7 +249,11 @@ app.post('/api/convert/images-to-pdf', upload.array('files', 50), async (req, re
     for (const file of req.files) {
       if (!allowed.has(path.extname(file.originalname || '').toLowerCase())) throw new Error(`Imagem inválida: ${file.originalname}`);
       const sharp = require('sharp');
-      const buf = await sharp(file.path).jpeg({ quality: 90, mozjpeg: true }).toBuffer();
+      // .rotate() sem argumentos aplica a rotação indicada pela metadata EXIF
+      // da câmera (comum em fotos de celular) antes de "gravar" os pixels -
+      // sem isso, fotos tiradas na vertical entravam de lado no PDF, porque
+      // o .jpeg() abaixo descarta essa metadata sem aplicar a rotação.
+      const buf = await sharp(file.path).rotate().jpeg({ quality: 90, mozjpeg: true }).toBuffer();
       const img = await doc.embedJpg(buf);
       const page = doc.addPage([img.width, img.height]);
       page.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });

@@ -114,6 +114,32 @@ module.exports = function registerOcrRoutes(app, { upload, UP, TMP, run, cleanup
   });
 };
 
+/** Detecta se a página está de lado/de cabeça para baixo (comum em fotos de
+ * celular de apps que não tratam a rotação) e, se detectar com alguma
+ * confiança, gira a imagem antes do OCR principal. Nunca lança erro - se a
+ * detecção falhar ou não achar texto suficiente para decidir, simplesmente
+ * segue com a imagem original, sem piorar nada. */
+async function autoFixOrientation(imagePath, run) {
+  try {
+    const stdout = await run('tesseract', [imagePath, 'stdout', '--psm', '0'], { timeout: 60000 });
+    const text = String(stdout || '');
+    const rotateMatch = text.match(/Rotate:\s*(\d+)/);
+    const confMatch = text.match(/Orientation confidence:\s*([\d.]+)/);
+    const rotate = rotateMatch ? Number(rotateMatch[1]) : 0;
+    const confidence = confMatch ? Number(confMatch[1]) : 0;
+    if (rotate && [90, 180, 270].includes(rotate) && confidence >= 0.5) {
+      const sharp = require('sharp');
+      const buf = await sharp(imagePath).rotate(rotate).png().toBuffer();
+      await fs.promises.writeFile(imagePath, buf);
+      return rotate;
+    }
+  } catch (_) {
+    // Detecção de orientação é só um "bônus" - se falhar por qualquer
+    // motivo (pouco texto, imagem simples demais, etc.), segue sem girar.
+  }
+  return 0;
+}
+
 /** Caminho antigo (Tesseract, roda dentro do próprio servidor) - agora usado
  * como alternativa automática, quando não há chave do Google Vision ou ela falha. */
 async function runTesseractPipeline(images, workDir, output, run, TMP) {
@@ -123,6 +149,9 @@ async function runTesseractPipeline(images, workDir, output, run, TMP) {
     const pageStart = Date.now();
     const imagePath = path.join(workDir, images[i]);
     const outBase = path.join(workDir, `ocr-${String(i + 1).padStart(4, '0')}`);
+
+    const rotated = await autoFixOrientation(imagePath, run);
+    if (rotated) console.log(`[OCR] Página ${i + 1} estava de lado - corrigida automaticamente (${rotated}°)`);
 
     await run('tesseract', [
       imagePath,
