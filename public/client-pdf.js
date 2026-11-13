@@ -105,7 +105,10 @@
         const ctx = canvas.getContext('2d', { alpha: false });
         ctx.fillStyle = '#fff';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        await page.render({ canvasContext: ctx, viewport }).promise;
+        // intent 'print' faz o pdf.js desenhar sem requestAnimationFrame;
+        // com o padrão ('display') as miniaturas ficavam paradas enquanto a
+        // aba ou a janela do navegador não estivesse visível.
+        await page.render({ canvasContext: ctx, viewport, intent: 'print' }).promise;
         const blob = await canvasToBlob(canvas, 'image/jpeg', 0.8);
         canvas.width = canvas.height = 0;
         return trackUrl(blob);
