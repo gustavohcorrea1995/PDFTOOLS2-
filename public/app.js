@@ -42,6 +42,7 @@ backBtn.onclick = () => {
   workspace.classList.add('hidden');
   hero.classList.remove('hidden');
   toolBody.innerHTML = '';
+  releaseClientPdf();
 };
 
 function openTool(id){
@@ -56,6 +57,7 @@ function openTool(id){
   workspace.classList.remove('hidden');
   toolTitle.textContent = tool.title;
   toolBody.innerHTML = '';
+  releaseClientPdf();
   RENDERERS[id](toolBody);
 }
 
@@ -214,6 +216,88 @@ async function pickSaveTarget(defaultFilename){
   };
 }
 
+// ---------- processamento no navegador (client-pdf.js) ----------
+// Miniaturas e as ferramentas Juntar / Dividir / Organizar / Imagens -> PDF
+// rodam no navegador. Se qualquer coisa falhar ali (PDF fora do padrão,
+// navegador antigo, biblioteca que não carregou), caímos na rota do
+// servidor, que continua existindo exatamente como antes.
+const BLANK_IMG = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+const THUMB_SIDE = 420;
+const FULL_SIDE = 1600;
+const openPdfSessions = new Set();
+
+function releaseClientPdf(){
+  openPdfSessions.forEach(s => s.destroy());
+  openPdfSessions.clear();
+  if(window.ClientPDF) window.ClientPDF.revokeAll();
+}
+
+async function openClientPdf(file){
+  if(!window.ClientPDF) throw new Error('ClientPDF indisponível.');
+  const session = await window.ClientPDF.open(file);
+  openPdfSessions.add(session);
+  return session;
+}
+
+function closeClientPdf(session){
+  if(!session) return;
+  session.destroy();
+  openPdfSessions.delete(session);
+}
+
+/**
+ * Roda a operação no navegador; se falhar por motivo técnico, tenta a rota
+ * do servidor. Erros de validação (userError) são mostrados direto.
+ */
+async function clientFirst(label, clientFn, serverFn){
+  if(window.ClientPDF){
+    try{
+      return await clientFn();
+    }catch(err){
+      if(err && err.userError) throw err;
+      console.warn(`${label}: falhou no navegador, usando o servidor.`, err);
+    }
+  }
+  return serverFn();
+}
+
+/**
+ * Carrega as miniaturas de um PDF aos poucos (uma página por vez).
+ * onReady(pageCount) é chamado assim que o número de páginas é conhecido;
+ * onThumb(pageNum, url) a cada miniatura pronta. Devolve a sessão, ou null
+ * se precisou usar o servidor (nesse caso onThumb já foi chamado para todas).
+ */
+async function loadThumbs(file, { onReady, onThumb, isStale }){
+  try{
+    const session = await openClientPdf(file);
+    if(isStale()){ closeClientPdf(session); return null; }
+    onReady(session.pageCount);
+    (async ()=>{
+      for(let p=1; p<=session.pageCount; p++){
+        if(isStale() || session.destroyed) return;
+        try{
+          const url = await session.render(p, THUMB_SIDE);
+          if(isStale()) return;
+          onThumb(p, url);
+        }catch(err){
+          if(!session.destroyed) console.warn('Miniatura da página ' + p + ' falhou:', err);
+        }
+      }
+    })();
+    return session;
+  }catch(err){
+    console.warn('Prévia no navegador falhou, usando o servidor.', err);
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await postForm('/api/inspect', fd);
+  const data = await res.json();
+  if(isStale()) return null;
+  onReady(data.pageCount);
+  (data.thumbnails || []).forEach((url, i) => onThumb(i+1, url));
+  return null;
+}
+
 // ---------- RENDERERS ----------
 const RENDERERS = {};
 
@@ -240,6 +324,17 @@ RENDERERS['merge'] = (root)=>{
   let items = []; // { file, thumb, pageCount, loading }
 
   async function fetchPreview(file){
+    // Só a capa e a contagem de páginas - feito no navegador.
+    let session = null;
+    try{
+      session = await openClientPdf(file);
+      const thumb = await session.render(1, THUMB_SIDE);
+      return { thumb, pageCount: session.pageCount };
+    }catch(err){
+      console.warn('Prévia no navegador falhou, usando o servidor.', err);
+    }finally{
+      closeClientPdf(session);
+    }
     const fd = new FormData();
     fd.append('file', file);
     try{
@@ -323,12 +418,17 @@ RENDERERS['merge'] = (root)=>{
     if(items.length < 2) return toast('Selecione pelo menos 2 arquivos PDF.', true);
     const save = await pickSaveTarget('unido.pdf');
     if(save.cancelled) return;
-    const fd = new FormData();
-    items.forEach(it=>fd.append('files', it.file));
     setLoading(btn,true,'Juntando…');
     try{
-      const res = await postForm('/api/merge', fd);
-      await save.deliver(await res.blob());
+      const files = items.map(it=>it.file);
+      const blob = await clientFirst('Juntar',
+        ()=> ClientPDF.merge(files),
+        async ()=>{
+          const fd = new FormData();
+          files.forEach(f=>fd.append('files', f));
+          return (await postForm('/api/merge', fd)).blob();
+        });
+      await save.deliver(blob);
       toast('PDFs unidos com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);
@@ -348,21 +448,31 @@ RENDERERS['split'] = (root)=>{
   // existe uma divisão (ex: splits={3} => um arquivo com as págs. 1-3 e
   // outro com o restante).
   let state = { pageCount: 0, thumbs: [], splits: new Set() };
+  let loadToken = 0;
+  let session = null;
 
   dz.el.onchange = async (files)=>{
-    if(files.length !== 1) return;
+    // O evento 'change' nativo do <input> interno também borbulha até aqui
+    // (com um Event no lugar da lista) - ignora, senão ele cancelaria o
+    // carregamento que acabou de começar.
+    if(!Array.isArray(files)) return;
+    const token = ++loadToken;
+    closeClientPdf(session); session = null;
+    state = { pageCount: 0, thumbs: [], splits: new Set() };
     grid.innerHTML = '';
+    hint.textContent = '';
+    if(files.length !== 1) return;
     hint.textContent = 'Carregando páginas…';
-    const fd = new FormData();
-    fd.append('file', files[0]);
     try{
-      const res = await postForm('/api/inspect', fd);
-      const data = await res.json();
-      state.pageCount = data.pageCount;
-      state.thumbs = data.thumbnails || [];
-      state.splits = new Set();
-      renderGrid();
-    }catch(e){ toast(e.message, true); hint.textContent=''; }
+      session = await loadThumbs(files[0], {
+        isStale: ()=> token !== loadToken,
+        onReady: (pageCount)=>{ state.pageCount = pageCount; state.thumbs = []; renderGrid(); },
+        onThumb: (p, url)=>{
+          state.thumbs[p-1] = url;
+          grid.querySelectorAll(`img[data-p="${p}"]`).forEach(img => img.src = url);
+        }
+      });
+    }catch(e){ if(token === loadToken){ toast(e.message, true); hint.textContent=''; } }
   };
 
   function computeGroups(){
@@ -390,7 +500,7 @@ RENDERERS['split'] = (root)=>{
     for(let p=1; p<=state.pageCount; p++){
       const thumb = document.createElement('div');
       thumb.className = 'split-thumb';
-      thumb.innerHTML = `<img src="${state.thumbs[p-1]||''}" alt=""><div class="pnum">Pág. ${p}</div>`;
+      thumb.innerHTML = `<img data-p="${p}" src="${state.thumbs[p-1]||BLANK_IMG}" alt=""><div class="pnum">Pág. ${p}</div>`;
       grid.appendChild(thumb);
 
       if(p < state.pageCount){
@@ -417,13 +527,17 @@ RENDERERS['split'] = (root)=>{
     const ranges = groups.map(g => g[0]===g[1] ? String(g[0]) : `${g[0]}-${g[1]}`).join(',');
     const save = await pickSaveTarget('partes.zip');
     if(save.cancelled) return;
-    const fd = new FormData();
-    fd.append('file', files[0]);
-    fd.append('ranges', ranges);
     setLoading(btn,true,'Dividindo…');
     try{
-      const res = await postForm('/api/split', fd);
-      await save.deliver(await res.blob());
+      const blob = await clientFirst('Dividir',
+        ()=> ClientPDF.split(files[0], groups),
+        async ()=>{
+          const fd = new FormData();
+          fd.append('file', files[0]);
+          fd.append('ranges', ranges);
+          return (await postForm('/api/split', fd)).blob();
+        });
+      await save.deliver(blob);
       toast('PDF dividido com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);
@@ -543,12 +657,17 @@ RENDERERS['images-to-pdf'] = (root)=>{
     if(items.length < 1) return toast('Selecione pelo menos uma imagem.', true);
     const save = await pickSaveTarget('imagens.pdf');
     if(save.cancelled) return;
-    const fd = new FormData();
-    items.forEach(it=>fd.append('files', it.file));
     setLoading(btn,true,'Convertendo…');
     try{
-      const res = await postForm('/api/convert/images-to-pdf', fd);
-      await save.deliver(await res.blob());
+      const files = items.map(it=>it.file);
+      const blob = await clientFirst('Imagens para PDF',
+        ()=> ClientPDF.imagesToPdf(files),
+        async ()=>{
+          const fd = new FormData();
+          files.forEach(f=>fd.append('files', f));
+          return (await postForm('/api/convert/images-to-pdf', fd)).blob();
+        });
+      await save.deliver(blob);
       toast('PDF gerado com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);
@@ -647,22 +766,38 @@ RENDERERS['edit'] = (root)=>{
   root.appendChild(grid);
 
   let state = { pageCount:0, thumbs:[], order:[], rotations:{}, deleted:new Set() };
+  let loadToken = 0;
+  let session = null;
+  let loadedFile = null;
 
   dz.el.onchange = async (files)=>{
+    // O evento 'change' nativo do <input> interno também borbulha até aqui
+    // (com um Event no lugar da lista) - ignora, senão ele cancelaria o
+    // carregamento que acabou de começar.
+    if(!Array.isArray(files)) return;
+    const token = ++loadToken;
+    closeClientPdf(session); session = null;
+    loadedFile = null;
+    state = { pageCount:0, thumbs:[], order:[], rotations:{}, deleted:new Set() };
+    grid.innerHTML = '';
     if(files.length !== 1) return;
     grid.innerHTML = '<p class="hint">Carregando páginas…</p>';
-    const fd = new FormData();
-    fd.append('file', files[0]);
     try{
-      const res = await postForm('/api/inspect', fd);
-      const data = await res.json();
-      state.pageCount = data.pageCount;
-      state.thumbs = data.thumbnails;
-      state.order = Array.from({length:data.pageCount}, (_,i)=>i+1);
-      state.rotations = {};
-      state.deleted = new Set();
-      renderPages();
-    }catch(e){ toast(e.message, true); grid.innerHTML=''; }
+      session = await loadThumbs(files[0], {
+        isStale: ()=> token !== loadToken,
+        onReady: (pageCount)=>{
+          loadedFile = files[0];
+          state.pageCount = pageCount;
+          state.thumbs = [];
+          state.order = Array.from({length:pageCount}, (_,i)=>i+1);
+          renderPages();
+        },
+        onThumb: (p, url)=>{
+          state.thumbs[p-1] = url;
+          grid.querySelectorAll(`img[data-p="${p}"]`).forEach(img => img.src = url);
+        }
+      });
+    }catch(e){ if(token === loadToken){ toast(e.message, true); grid.innerHTML=''; } }
   };
 
   function renderPages(){
@@ -672,7 +807,7 @@ RENDERERS['edit'] = (root)=>{
       div.className = 'page-thumb' + (state.deleted.has(pageNum) ? ' marked' : '');
       const rot = state.rotations[pageNum] || 0;
       div.innerHTML = `
-        <div class="page-thumb-frame"><img src="${state.thumbs[pageNum-1]}" style="transform:rotate(${rot}deg)"></div>
+        <div class="page-thumb-frame"><img data-p="${pageNum}" src="${state.thumbs[pageNum-1]||BLANK_IMG}" style="transform:rotate(${rot}deg)"></div>
         <div class="pnum">Pág. ${pageNum}</div>
         <div class="actions">
           <button data-a="left">↺</button>
@@ -686,6 +821,10 @@ RENDERERS['edit'] = (root)=>{
       div.querySelector('[data-a=up]').onclick = ()=>{ if(idx>0){ [state.order[idx-1],state.order[idx]]=[state.order[idx],state.order[idx-1]]; renderPages(); } };
       div.querySelector('[data-a=down]').onclick = ()=>{ if(idx<state.order.length-1){ [state.order[idx+1],state.order[idx]]=[state.order[idx],state.order[idx+1]]; renderPages(); } };
       div.querySelector('[data-a=del]').onclick = ()=>{ state.deleted.has(pageNum) ? state.deleted.delete(pageNum) : state.deleted.add(pageNum); renderPages(); };
+      // Ao clicar para ampliar (preview-modal.js), renderiza a página em
+      // alta resolução só nesse momento.
+      const activeSession = session;
+      if(activeSession) div.querySelector('img')._full = ()=> activeSession.render(pageNum, FULL_SIDE);
       grid.appendChild(div);
     });
   }
@@ -693,21 +832,26 @@ RENDERERS['edit'] = (root)=>{
   const btn = makeButton(root, 'Aplicar alterações');
   btn.dataset.label = btn.textContent;
   btn.onclick = async ()=>{
-    const files = dz.getFiles();
-    if(!state.pageCount) return toast('Envie um PDF primeiro.', true);
+    if(!state.pageCount || !loadedFile) return toast('Envie um PDF primeiro.', true);
+    const file = loadedFile;
+    const ops = {
+      keepOrder: state.order.slice(),
+      delete: Array.from(state.deleted),
+      rotations: { ...state.rotations }
+    };
     const save = await pickSaveTarget('editado.pdf');
     if(save.cancelled) return;
-    const fd = new FormData();
-    fd.append('file', files[files.length-1]);
-    fd.append('operations', JSON.stringify({
-      keepOrder: state.order,
-      delete: Array.from(state.deleted),
-      rotations: state.rotations
-    }));
     setLoading(btn,true,'Aplicando…');
     try{
-      const res = await postForm('/api/pages/edit', fd);
-      await save.deliver(await res.blob());
+      const blob = await clientFirst('Organizar páginas',
+        ()=> ClientPDF.editPages(file, ops),
+        async ()=>{
+          const fd = new FormData();
+          fd.append('file', file);
+          fd.append('operations', JSON.stringify(ops));
+          return (await postForm('/api/pages/edit', fd)).blob();
+        });
+      await save.deliver(blob);
       toast('Alterações aplicadas com sucesso!');
     }catch(e){ toast(e.message, true); }
     setLoading(btn,false);

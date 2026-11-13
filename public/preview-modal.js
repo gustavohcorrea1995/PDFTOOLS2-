@@ -83,6 +83,14 @@
       e.stopPropagation();
       const label = img.closest('.page-thumb')?.querySelector('.pnum')?.textContent || 'Visualizar página';
       modal._open(img.currentSrc || img.src, label);
+      // Miniaturas geradas no navegador são pequenas: se a página souber se
+      // renderizar em alta resolução (img._full, definido no app.js), troca
+      // a imagem ampliada assim que ela ficar pronta.
+      if (typeof img._full === 'function') {
+        const big = modal.querySelector('img');
+        const shown = big.src;
+        img._full().then(url => { if (modal.classList.contains('open') && big.src === shown) big.src = url; }).catch(() => {});
+      }
     }, true);
   }
 
